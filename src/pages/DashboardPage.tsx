@@ -16,12 +16,6 @@ const cards = [
     description: "Visualizar solicitações enviadas",
     to: "/solicitacoes",
   },
-  {
-    icon: MessageCircle,
-    title: "Assistente de Coleta",
-    description: "Chat para receber dados solicitados",
-    to: "/chatbot",
-  },
 ];
 
 const DashboardPage = () => {
