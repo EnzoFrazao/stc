@@ -27,7 +27,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   });
 
   const login = (email: string, password: string) => {
-    if (email === "admin@stc.ma.gov.br" && password === "admin123") {
+    if (email === "admin@stc.ma.gov.br" && password === "12345") {
       const u = { email, name: "Administrador STC" };
       setUser(u);
       sessionStorage.setItem("stc-user", JSON.stringify(u));
