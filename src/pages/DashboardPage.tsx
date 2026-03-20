@@ -16,12 +16,6 @@ const cards = [
     description: "Visualizar solicitações enviadas",
     to: "/solicitacoes",
   },
-  {
-    icon: MessageCircle,
-    title: "Assistente de Coleta",
-    description: "Chat para receber dados solicitados",
-    to: "/chatbot",
-  },
 ];
 
 const DashboardPage = () => {
@@ -35,7 +29,7 @@ const DashboardPage = () => {
           <h2 className="text-3xl font-bold text-primary mb-2">Bem-vindo ao Sistema STC-MA</h2>
           <p className="text-muted-foreground">Selecione uma opção para começar</p>
         </div>
-        <div className="grid gap-6 md:grid-cols-3 max-w-4xl mx-auto">
+        <div className="grid gap-6 md:grid-cols-2 max-w-3xl mx-auto">
           {cards.map((card, i) => (
             <Card
               key={card.title}
