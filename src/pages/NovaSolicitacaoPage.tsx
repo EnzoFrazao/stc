@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -6,52 +6,91 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
-import { FileText, Trash2, Upload, Send, Plus } from "lucide-react";
+import { Send, X, Building2, FileSpreadsheet, Bell } from "lucide-react";
 import AppHeader from "@/components/AppHeader";
-
-const orgaos = [
-  "Secretaria de Saúde",
-  "Secretaria de Educação",
-  "Secretaria de Segurança",
-  "Secretaria de Infraestrutura",
-  "Secretaria de Administração",
-];
+import { orgaos, camposPlanilha, CampoPlanilha, CanalNotificacao } from "@/data/mockData";
 
 const NovaSolicitacaoPage = () => {
   const navigate = useNavigate();
   const { toast } = useToast();
-  const [orgao, setOrgao] = useState("");
-  const [assunto, setAssunto] = useState("");
-  const [prazo, setPrazo] = useState("");
-  const [descricao, setDescricao] = useState("");
-  const [checklist, setChecklist] = useState<string[]>(["Relatório de execução", "Planilha de gastos", "Contrato administrativo"]);
-  const [novoDoc, setNovoDoc] = useState("");
-  const [anexos, setAnexos] = useState<string[]>([]);
 
-  const addDoc = () => {
-    if (novoDoc.trim()) {
-      setChecklist([...checklist, novoDoc.trim()]);
-      setNovoDoc("");
+  const [orgaosSelecionados, setOrgaosSelecionados] = useState<string[]>([]);
+  const [camposSelecionados, setCamposSelecionados] = useState<string[]>([]);
+  const [prazo, setPrazo] = useState("");
+  const [assunto, setAssunto] = useState("");
+  const [observacoes, setObservacoes] = useState("");
+  const [canal, setCanal] = useState<CanalNotificacao>("email");
+
+  // Filter fields based on selected organs
+  const camposDisponiveis = useMemo(() => {
+    if (orgaosSelecionados.length === 0) return [];
+    return camposPlanilha.filter(c =>
+      c.orgaosIds.some(oId => orgaosSelecionados.includes(oId))
+    );
+  }, [orgaosSelecionados]);
+
+  // Group available fields by organ for display
+  const camposPorOrgao = useMemo(() => {
+    const map: Record<string, CampoPlanilha[]> = {};
+    for (const orgaoId of orgaosSelecionados) {
+      const orgao = orgaos.find(o => o.id === orgaoId);
+      if (!orgao) continue;
+      map[orgao.nome] = camposDisponiveis.filter(c => c.orgaosIds.includes(orgaoId));
     }
+    return map;
+  }, [orgaosSelecionados, camposDisponiveis]);
+
+  const toggleOrgao = (orgaoId: string) => {
+    setOrgaosSelecionados(prev => {
+      const next = prev.includes(orgaoId)
+        ? prev.filter(id => id !== orgaoId)
+        : [...prev, orgaoId];
+      // Remove campos that are no longer available
+      const novosDisponiveis = camposPlanilha
+        .filter(c => c.orgaosIds.some(oId => next.includes(oId)))
+        .map(c => c.id);
+      setCamposSelecionados(prev => prev.filter(id => novosDisponiveis.includes(id)));
+      return next;
+    });
   };
 
-  const removeDoc = (i: number) => setChecklist(checklist.filter((_, idx) => idx !== i));
+  const toggleCampo = (campoId: string) => {
+    setCamposSelecionados(prev =>
+      prev.includes(campoId) ? prev.filter(id => id !== campoId) : [...prev, campoId]
+    );
+  };
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files) {
-      setAnexos([...anexos, ...Array.from(e.target.files).map(f => f.name)]);
-    }
+  const tipoLabel: Record<string, string> = {
+    texto: "Texto",
+    monetario: "Monetário",
+    numerico: "Numérico",
+    data: "Data",
+    arquivo: "Arquivo",
+  };
+
+  const tipoBadgeColor: Record<string, string> = {
+    texto: "bg-muted text-muted-foreground",
+    monetario: "bg-status-completed-bg text-status-completed",
+    numerico: "bg-status-progress-bg text-status-progress",
+    data: "bg-status-pending-bg text-status-pending",
+    arquivo: "bg-status-overdue-bg text-status-overdue",
   };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!orgao || !assunto || !prazo) {
+    if (orgaosSelecionados.length === 0 || camposSelecionados.length === 0 || !prazo || !assunto) {
       toast({ title: "Erro", description: "Preencha todos os campos obrigatórios.", variant: "destructive" });
       return;
     }
-    toast({ title: "Solicitação enviada!", description: "Sua solicitação foi registrada com sucesso." });
-    setTimeout(() => navigate("/solicitacoes"), 1000);
+    const canalTexto = canal === "whatsapp" ? "WhatsApp" : canal === "email" ? "E-mail" : "WhatsApp e E-mail";
+    toast({
+      title: "Solicitação enviada!",
+      description: `Notificação enviada via ${canalTexto} para ${orgaosSelecionados.length} órgão(s).`,
+    });
+    setTimeout(() => navigate("/solicitacoes"), 1200);
   };
 
   return (
@@ -60,23 +99,112 @@ const NovaSolicitacaoPage = () => {
       <main className="container py-8">
         <form onSubmit={handleSubmit}>
           <div className="grid gap-6 lg:grid-cols-3">
-            {/* Form */}
-            <div className="lg:col-span-2">
+            {/* Main form */}
+            <div className="lg:col-span-2 space-y-6">
+              {/* Step 1: Select organs */}
               <Card className="border-0 shadow-lg animate-fade-in">
-                <CardHeader>
-                  <CardTitle className="text-primary">Dados da Solicitação</CardTitle>
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-primary flex items-center gap-2">
+                    <Building2 className="h-5 w-5" />
+                    1. Selecione os Órgãos *
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                    {orgaos.map(orgao => {
+                      const selected = orgaosSelecionados.includes(orgao.id);
+                      return (
+                        <button
+                          key={orgao.id}
+                          type="button"
+                          onClick={() => toggleOrgao(orgao.id)}
+                          className={`rounded-lg border-2 p-4 text-left text-sm transition-all active:scale-[0.98] ${
+                            selected
+                              ? "border-secondary bg-secondary/10 shadow-md"
+                              : "border-border bg-card hover:border-secondary/40 hover:shadow-sm"
+                          }`}
+                        >
+                          <div className="flex items-center gap-2">
+                            <Checkbox checked={selected} className="pointer-events-none" />
+                            <span className="font-medium">{orgao.nome}</span>
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                  {orgaosSelecionados.length > 0 && (
+                    <div className="flex flex-wrap gap-2 mt-4">
+                      {orgaosSelecionados.map(id => {
+                        const o = orgaos.find(o => o.id === id)!;
+                        return (
+                          <Badge key={id} variant="secondary" className="gap-1 pr-1">
+                            {o.nome}
+                            <button type="button" onClick={() => toggleOrgao(id)} className="ml-1 rounded-full hover:bg-secondary/20 p-0.5">
+                              <X className="h-3 w-3" />
+                            </button>
+                          </Badge>
+                        );
+                      })}
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+
+              {/* Step 2: Select fields */}
+              <Card className={`border-0 shadow-lg transition-opacity ${orgaosSelecionados.length === 0 ? "opacity-50 pointer-events-none" : "animate-fade-in"}`}>
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-primary flex items-center gap-2">
+                    <FileSpreadsheet className="h-5 w-5" />
+                    2. Selecione os Dados da Planilha *
+                  </CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-4">
-                  <div className="grid gap-4 md:grid-cols-2">
-                    <div className="space-y-2">
-                      <Label>Órgão Destinatário *</Label>
-                      <Select value={orgao} onValueChange={setOrgao}>
-                        <SelectTrigger><SelectValue placeholder="Selecione o órgão" /></SelectTrigger>
-                        <SelectContent>
-                          {orgaos.map(o => <SelectItem key={o} value={o}>{o}</SelectItem>)}
-                        </SelectContent>
-                      </Select>
+                  {Object.entries(camposPorOrgao).map(([orgaoNome, campos]) => (
+                    <div key={orgaoNome}>
+                      <h4 className="text-sm font-semibold text-primary mb-2">{orgaoNome}</h4>
+                      <div className="space-y-2">
+                        {campos.map(campo => {
+                          const checked = camposSelecionados.includes(campo.id);
+                          return (
+                            <button
+                              key={campo.id}
+                              type="button"
+                              onClick={() => toggleCampo(campo.id)}
+                              className={`w-full flex items-center justify-between rounded-lg border p-3 text-sm transition-all active:scale-[0.99] ${
+                                checked ? "border-secondary bg-secondary/5" : "border-border hover:border-secondary/30"
+                              }`}
+                            >
+                              <div className="flex items-center gap-3">
+                                <Checkbox checked={checked} className="pointer-events-none" />
+                                <span>{campo.nome}</span>
+                              </div>
+                              <Badge className={`text-xs ${tipoBadgeColor[campo.tipo]}`}>{tipoLabel[campo.tipo]}</Badge>
+                            </button>
+                          );
+                        })}
+                      </div>
                     </div>
+                  ))}
+                  {orgaosSelecionados.length > 0 && camposDisponiveis.length === 0 && (
+                    <p className="text-sm text-muted-foreground text-center py-4">Nenhum campo disponível para os órgãos selecionados.</p>
+                  )}
+                </CardContent>
+              </Card>
+
+              {/* Step 3: Details */}
+              <Card className={`border-0 shadow-lg transition-opacity ${camposSelecionados.length === 0 ? "opacity-50 pointer-events-none" : "animate-fade-in"}`}>
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-primary flex items-center gap-2">
+                    <Bell className="h-5 w-5" />
+                    3. Detalhes e Notificação
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="space-y-2">
+                    <Label>Assunto *</Label>
+                    <Input placeholder="Assunto da solicitação" value={assunto} onChange={e => setAssunto(e.target.value)} />
+                  </div>
+                  <div className="grid gap-4 md:grid-cols-2">
                     <div className="space-y-2">
                       <Label>Prazo *</Label>
                       <Select value={prazo} onValueChange={setPrazo}>
@@ -88,61 +216,69 @@ const NovaSolicitacaoPage = () => {
                         </SelectContent>
                       </Select>
                     </div>
-                  </div>
-                  <div className="space-y-2">
-                    <Label>Assunto *</Label>
-                    <Input placeholder="Assunto da solicitação" value={assunto} onChange={e => setAssunto(e.target.value)} />
-                  </div>
-                  <div className="space-y-2">
-                    <Label>Instruções / Descrição</Label>
-                    <Textarea placeholder="Descreva os dados solicitados..." rows={4} value={descricao} onChange={e => setDescricao(e.target.value)} />
-                  </div>
-                  {/* Anexos */}
-                  <div className="space-y-2">
-                    <Label>Anexos</Label>
-                    <div className="border-2 border-dashed border-border rounded-lg p-6 text-center hover:border-secondary transition-colors">
-                      <Upload className="mx-auto h-8 w-8 text-muted-foreground mb-2" />
-                      <p className="text-sm text-muted-foreground mb-2">Arraste arquivos ou clique para selecionar</p>
-                      <input type="file" multiple className="hidden" id="file-upload" onChange={handleFileChange} />
-                      <Button type="button" variant="outline" size="sm" onClick={() => document.getElementById("file-upload")?.click()}>
-                        Selecionar arquivos
-                      </Button>
+                    <div className="space-y-2">
+                      <Label>Canal de Notificação</Label>
+                      <Select value={canal} onValueChange={v => setCanal(v as CanalNotificacao)}>
+                        <SelectTrigger><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="email">E-mail</SelectItem>
+                          <SelectItem value="whatsapp">WhatsApp</SelectItem>
+                          <SelectItem value="ambos">Ambos</SelectItem>
+                        </SelectContent>
+                      </Select>
                     </div>
-                    {anexos.map((a, i) => (
-                      <div key={i} className="flex items-center justify-between rounded-md bg-muted px-3 py-2 text-sm">
-                        <span className="flex items-center gap-2"><FileText className="h-4 w-4 text-secondary" />{a}</span>
-                        <button type="button" onClick={() => setAnexos(anexos.filter((_, idx) => idx !== i))}><Trash2 className="h-4 w-4 text-destructive" /></button>
-                      </div>
-                    ))}
                   </div>
-                  <Button type="submit" className="w-full bg-secondary hover:bg-secondary/90 gap-2">
-                    <Send className="h-4 w-4" />
+                  <div className="space-y-2">
+                    <Label>Observações</Label>
+                    <Textarea placeholder="Observações adicionais (opcional)..." rows={3} value={observacoes} onChange={e => setObservacoes(e.target.value)} />
+                  </div>
+                  <Button type="submit" className="w-full bg-secondary hover:bg-secondary/90 gap-2 h-12 text-base">
+                    <Send className="h-5 w-5" />
                     Enviar Solicitação
                   </Button>
                 </CardContent>
               </Card>
             </div>
 
-            {/* Checklist sidebar */}
+            {/* Sidebar summary */}
             <div>
-              <Card className="border-0 shadow-lg animate-slide-up">
-                <CardHeader>
-                  <CardTitle className="text-primary text-base">Checklist de Documentos</CardTitle>
+              <Card className="border-0 shadow-lg animate-slide-up sticky top-24">
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-primary text-base">Resumo da Solicitação</CardTitle>
                 </CardHeader>
-                <CardContent className="space-y-3">
-                  <div className="flex gap-2">
-                    <Input placeholder="Nome do documento" value={novoDoc} onChange={e => setNovoDoc(e.target.value)} onKeyDown={e => e.key === "Enter" && (e.preventDefault(), addDoc())} />
-                    <Button type="button" size="icon" variant="outline" onClick={addDoc}><Plus className="h-4 w-4" /></Button>
+                <CardContent className="space-y-4 text-sm">
+                  <div>
+                    <span className="font-medium text-muted-foreground">Órgãos selecionados</span>
+                    <p className="font-semibold text-primary">{orgaosSelecionados.length}</p>
                   </div>
-                  <div className="space-y-2">
-                    {checklist.map((doc, i) => (
-                      <div key={i} className="flex items-center justify-between rounded-md bg-muted px-3 py-2 text-sm animate-fade-in">
-                        <span className="flex items-center gap-2">
-                          <FileText className="h-4 w-4 text-secondary" />{doc}
-                        </span>
-                        <button type="button" onClick={() => removeDoc(i)}><Trash2 className="h-4 w-4 text-destructive hover:text-destructive/80" /></button>
-                      </div>
-                    ))}
+                  <div>
+                    <span className="font-medium text-muted-foreground">Campos selecionados</span>
+                    <p className="font-semibold text-primary">{camposSelecionados.length}</p>
+                  </div>
+                  {camposSelecionados.length > 0 && (
+                    <div className="space-y-1.5 max-h-64 overflow-y-auto">
+                      {camposSelecionados.map(id => {
+                        const campo = camposPlanilha.find(c => c.id === id)!;
+                        return (
+                          <div key={id} className="flex items-center justify-between rounded-md bg-muted px-3 py-2">
+                            <span className="truncate mr-2">{campo.nome}</span>
+                            <Badge className={`text-[10px] shrink-0 ${tipoBadgeColor[campo.tipo]}`}>{tipoLabel[campo.tipo]}</Badge>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                  {prazo && (
+                    <div>
+                      <span className="font-medium text-muted-foreground">Prazo</span>
+                      <p className="font-semibold text-primary">{prazo}</p>
+                    </div>
+                  )}
+                  <div>
+                    <span className="font-medium text-muted-foreground">Canal de notificação</span>
+                    <p className="font-semibold text-primary">
+                      {canal === "email" ? "E-mail" : canal === "whatsapp" ? "WhatsApp" : "WhatsApp e E-mail"}
+                    </p>
                   </div>
                 </CardContent>
               </Card>
