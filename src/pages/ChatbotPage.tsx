@@ -260,7 +260,7 @@ const ChatbotPage = () => {
               return (
                 <div key={item.id} className="space-y-1.5">
                   <Label className="flex items-center gap-2">
-                    {campo?.nome || item.campoId}
+                    {campo?.label || campo?.nome || item.campoId}
                     <Badge variant="outline" className="text-[10px]">{item.tipoValor}</Badge>
                   </Label>
                   <Input
