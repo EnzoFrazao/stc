@@ -20,25 +20,23 @@ const NovaSolicitacaoPage = () => {
   const [orgaosSelecionados, setOrgaosSelecionados] = useState<string[]>([]);
   const [camposSelecionados, setCamposSelecionados] = useState<string[]>([]);
   const [prazo, setPrazo] = useState("");
-  const [assunto, setAssunto] = useState("");
+  const [titulo, setTitulo] = useState("");
   const [observacoes, setObservacoes] = useState("");
   const [canal, setCanal] = useState<CanalNotificacao>("email");
 
-  // Filter fields based on selected organs
   const camposDisponiveis = useMemo(() => {
     if (orgaosSelecionados.length === 0) return [];
     return camposPlanilha.filter(c =>
-      c.orgaosIds.some(oId => orgaosSelecionados.includes(oId))
+      c.orgaosPermitidos.some(oId => orgaosSelecionados.includes(oId))
     );
   }, [orgaosSelecionados]);
 
-  // Group available fields by organ for display
   const camposPorOrgao = useMemo(() => {
     const map: Record<string, CampoPlanilha[]> = {};
     for (const orgaoId of orgaosSelecionados) {
       const orgao = orgaos.find(o => o.id === orgaoId);
       if (!orgao) continue;
-      map[orgao.nome] = camposDisponiveis.filter(c => c.orgaosIds.includes(orgaoId));
+      map[orgao.nome] = camposDisponiveis.filter(c => c.orgaosPermitidos.includes(orgaoId));
     }
     return map;
   }, [orgaosSelecionados, camposDisponiveis]);
@@ -48,9 +46,8 @@ const NovaSolicitacaoPage = () => {
       const next = prev.includes(orgaoId)
         ? prev.filter(id => id !== orgaoId)
         : [...prev, orgaoId];
-      // Remove campos that are no longer available
       const novosDisponiveis = camposPlanilha
-        .filter(c => c.orgaosIds.some(oId => next.includes(oId)))
+        .filter(c => c.orgaosPermitidos.some(oId => next.includes(oId)))
         .map(c => c.id);
       setCamposSelecionados(prev => prev.filter(id => novosDisponiveis.includes(id)));
       return next;
@@ -65,27 +62,27 @@ const NovaSolicitacaoPage = () => {
 
   const tipoLabel: Record<string, string> = {
     texto: "Texto",
-    monetario: "Monetário",
-    numerico: "Numérico",
+    moeda: "Monetário",
+    numero: "Numérico",
     data: "Data",
-    arquivo: "Arquivo",
   };
 
   const tipoBadgeColor: Record<string, string> = {
     texto: "bg-muted text-muted-foreground",
-    monetario: "bg-status-completed-bg text-status-completed",
-    numerico: "bg-status-progress-bg text-status-progress",
+    moeda: "bg-status-completed-bg text-status-completed",
+    numero: "bg-status-progress-bg text-status-progress",
     data: "bg-status-pending-bg text-status-pending",
-    arquivo: "bg-status-overdue-bg text-status-overdue",
   };
+
+  const prazoDiasMap: Record<string, number> = { "D+3": 3, "D+7": 7, "D+15": 15 };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (orgaosSelecionados.length === 0 || camposSelecionados.length === 0 || !prazo || !assunto) {
+    if (orgaosSelecionados.length === 0 || camposSelecionados.length === 0 || !prazo || !titulo) {
       toast({ title: "Erro", description: "Preencha todos os campos obrigatórios.", variant: "destructive" });
       return;
     }
-    const canalTexto = canal === "whatsapp" ? "WhatsApp" : canal === "email" ? "E-mail" : "WhatsApp e E-mail";
+    const canalTexto = canal === "whatsapp" ? "WhatsApp" : canal === "email" ? "E-mail" : "Outro";
     toast({
       title: "Solicitação enviada!",
       description: `Notificação enviada via ${canalTexto} para ${orgaosSelecionados.length} órgão(s).`,
@@ -99,7 +96,6 @@ const NovaSolicitacaoPage = () => {
       <main className="container py-8">
         <form onSubmit={handleSubmit}>
           <div className="grid gap-6 lg:grid-cols-3">
-            {/* Main form */}
             <div className="lg:col-span-2 space-y-6">
               {/* Step 1: Select organs */}
               <Card className="border-0 shadow-lg animate-fade-in">
@@ -201,8 +197,8 @@ const NovaSolicitacaoPage = () => {
                 </CardHeader>
                 <CardContent className="space-y-4">
                   <div className="space-y-2">
-                    <Label>Assunto *</Label>
-                    <Input placeholder="Assunto da solicitação" value={assunto} onChange={e => setAssunto(e.target.value)} />
+                    <Label>Título *</Label>
+                    <Input placeholder="Título da solicitação" value={titulo} onChange={e => setTitulo(e.target.value)} />
                   </div>
                   <div className="grid gap-4 md:grid-cols-2">
                     <div className="space-y-2">
@@ -210,9 +206,9 @@ const NovaSolicitacaoPage = () => {
                       <Select value={prazo} onValueChange={setPrazo}>
                         <SelectTrigger><SelectValue placeholder="Selecione o prazo" /></SelectTrigger>
                         <SelectContent>
-                          <SelectItem value="D+3">D+3</SelectItem>
-                          <SelectItem value="D+7">D+7</SelectItem>
-                          <SelectItem value="D+15">D+15</SelectItem>
+                          <SelectItem value="D+3">D+3 (3 dias)</SelectItem>
+                          <SelectItem value="D+7">D+7 (7 dias)</SelectItem>
+                          <SelectItem value="D+15">D+15 (15 dias)</SelectItem>
                         </SelectContent>
                       </Select>
                     </div>
@@ -223,7 +219,7 @@ const NovaSolicitacaoPage = () => {
                         <SelectContent>
                           <SelectItem value="email">E-mail</SelectItem>
                           <SelectItem value="whatsapp">WhatsApp</SelectItem>
-                          <SelectItem value="ambos">Ambos</SelectItem>
+                          <SelectItem value="outro">Outro</SelectItem>
                         </SelectContent>
                       </Select>
                     </div>
@@ -277,7 +273,7 @@ const NovaSolicitacaoPage = () => {
                   <div>
                     <span className="font-medium text-muted-foreground">Canal de notificação</span>
                     <p className="font-semibold text-primary">
-                      {canal === "email" ? "E-mail" : canal === "whatsapp" ? "WhatsApp" : "WhatsApp e E-mail"}
+                      {canal === "email" ? "E-mail" : canal === "whatsapp" ? "WhatsApp" : "Outro"}
                     </p>
                   </div>
                 </CardContent>
