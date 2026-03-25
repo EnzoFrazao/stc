@@ -1,51 +1,69 @@
 // ============ TYPES ============
 
-export type SolicitacaoStatus = "Pendente" | "Em Andamento" | "Concluída" | "Atrasada";
-export type ItemValidacao = "pendente" | "validado" | "recusado";
-export type CanalNotificacao = "whatsapp" | "email" | "ambos";
-export type TipoCampo = "texto" | "monetario" | "numerico" | "data" | "arquivo";
+export type CanalNotificacao = "email" | "whatsapp" | "outro";
+export type TipoCampo = "texto" | "moeda" | "numero" | "data";
+export type SolicitacaoStatus = "aberta" | "parcial" | "concluida";
+export type RespostaStatus = "pendente" | "enviado" | "em_validacao" | "concluido";
+export type ValidacaoStatus = "pendente" | "validado" | "recusado";
+export type OrigemResposta = "arquivo" | "preenchimento_manual" | "imagem";
+export type ReenvioStatus = "aberto" | "respondido";
 
 export interface Orgao {
   id: string;
   nome: string;
+  canaisNotificacao: CanalNotificacao[];
 }
 
 export interface CampoPlanilha {
   id: string;
   nome: string;
+  label: string;
   tipo: TipoCampo;
-  orgaosIds: string[]; // quais órgãos podem fornecer este campo
-}
-
-export interface ItemSolicitacao {
-  id: string;
-  campoId: string;
-  campoNome: string;
-  campoTipo: TipoCampo;
-  orgaoId: string;
-  valorRecebido?: string;
-  validacao: ItemValidacao;
-  reenvioSolicitado?: boolean;
-}
-
-export interface OrgaoSolicitacao {
-  orgaoId: string;
-  orgaoNome: string;
-  status: SolicitacaoStatus;
-  itens: ItemSolicitacao[];
-  progresso: number;
+  orgaosPermitidos: string[];
+  categoria?: string;
 }
 
 export interface Solicitacao {
   id: string;
-  protocolo: string;
-  assunto: string;
-  dataEnvio: string;
-  prazo: string;
-  observacoes: string;
+  titulo: string;
+  observacoes?: string;
+  prazoDias: number;
   canalNotificacao: CanalNotificacao;
-  orgaos: OrgaoSolicitacao[];
-  statusGeral: SolicitacaoStatus;
+  orgaosSelecionados: string[];
+  camposSolicitados: string[];
+  status: SolicitacaoStatus;
+  createdAt: string;
+}
+
+export interface RespostaItem {
+  id: string;
+  campoId: string;
+  valor: string | number;
+  tipoValor: TipoCampo;
+  origem: OrigemResposta;
+  validacaoStatus: ValidacaoStatus;
+  motivoRecusa?: string;
+}
+
+export interface RespostaOrgao {
+  id: string;
+  solicitacaoId: string;
+  orgaoId: string;
+  status: RespostaStatus;
+  itens: RespostaItem[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ReenvioItem {
+  id: string;
+  solicitacaoOriginalId: string;
+  respostaOrgaoId: string;
+  orgaoId: string;
+  campoId: string;
+  motivo: string;
+  status: ReenvioStatus;
+  createdAt: string;
 }
 
 export interface ChatMessage {
@@ -57,201 +75,212 @@ export interface ChatMessage {
 
 export interface ChatConversation {
   id: string;
-  protocolo: string;
-  orgao: string;
-  orgaoId: string;
   solicitacaoId: string;
+  orgaoId: string;
+  orgaoNome: string;
+  protocolo: string;
   ultimoContato: string;
   messages: ChatMessage[];
-  itens: ItemSolicitacao[];
+  respostaOrgaoId: string;
   progresso: number;
 }
 
 // ============ MOCK ORGANS ============
 
 export const orgaos: Orgao[] = [
-  { id: "org-1", nome: "Secretaria de Saúde" },
-  { id: "org-2", nome: "Secretaria de Educação" },
-  { id: "org-3", nome: "Secretaria de Segurança" },
-  { id: "org-4", nome: "Secretaria de Infraestrutura" },
-  { id: "org-5", nome: "Secretaria de Administração" },
+  { id: "org-1", nome: "Secretaria de Saúde", canaisNotificacao: ["email", "whatsapp"] },
+  { id: "org-2", nome: "Secretaria de Educação", canaisNotificacao: ["email"] },
+  { id: "org-3", nome: "Secretaria de Segurança", canaisNotificacao: ["email", "whatsapp"] },
+  { id: "org-4", nome: "Secretaria de Infraestrutura", canaisNotificacao: ["whatsapp"] },
+  { id: "org-5", nome: "Secretaria de Administração", canaisNotificacao: ["email", "whatsapp", "outro"] },
 ];
 
-// ============ SPREADSHEET FIELDS (campos da planilha) ============
+// ============ SPREADSHEET FIELDS ============
 
 export const camposPlanilha: CampoPlanilha[] = [
   // Saúde
-  { id: "c-1", nome: "Número de leitos hospitalares", tipo: "numerico", orgaosIds: ["org-1"] },
-  { id: "c-2", nome: "Salário de enfermeiros", tipo: "monetario", orgaosIds: ["org-1"] },
-  { id: "c-3", nome: "Dados de vacinação municipal", tipo: "numerico", orgaosIds: ["org-1"] },
-  { id: "c-4", nome: "Relatório de atendimento hospitalar", tipo: "arquivo", orgaosIds: ["org-1"] },
-  { id: "c-5", nome: "Despesas com medicamentos", tipo: "monetario", orgaosIds: ["org-1"] },
+  { id: "c-1", nome: "Número de leitos hospitalares", label: "Leitos Hospitalares", tipo: "numero", orgaosPermitidos: ["org-1"], categoria: "Saúde" },
+  { id: "c-2", nome: "Salário de enfermeiros", label: "Salário Enfermeiros", tipo: "moeda", orgaosPermitidos: ["org-1"], categoria: "Saúde" },
+  { id: "c-3", nome: "Dados de vacinação municipal", label: "Vacinação Municipal", tipo: "numero", orgaosPermitidos: ["org-1"], categoria: "Saúde" },
+  { id: "c-4", nome: "Relatório de atendimento hospitalar", label: "Atendimento Hospitalar", tipo: "texto", orgaosPermitidos: ["org-1"], categoria: "Saúde" },
+  { id: "c-5", nome: "Despesas com medicamentos", label: "Despesas Medicamentos", tipo: "moeda", orgaosPermitidos: ["org-1"], categoria: "Saúde" },
   // Educação
-  { id: "c-6", nome: "Dados de matrícula escolar", tipo: "numerico", orgaosIds: ["org-2"] },
-  { id: "c-7", nome: "Merenda escolar - gastos", tipo: "monetario", orgaosIds: ["org-2"] },
-  { id: "c-8", nome: "Número de professores ativos", tipo: "numerico", orgaosIds: ["org-2"] },
-  { id: "c-9", nome: "Relatório de frequência escolar", tipo: "arquivo", orgaosIds: ["org-2"] },
-  { id: "c-10", nome: "Infraestrutura de escolas", tipo: "texto", orgaosIds: ["org-2"] },
+  { id: "c-6", nome: "Dados de matrícula escolar", label: "Matrícula Escolar", tipo: "numero", orgaosPermitidos: ["org-2"], categoria: "Educação" },
+  { id: "c-7", nome: "Merenda escolar - gastos", label: "Gastos Merenda", tipo: "moeda", orgaosPermitidos: ["org-2"], categoria: "Educação" },
+  { id: "c-8", nome: "Número de professores ativos", label: "Professores Ativos", tipo: "numero", orgaosPermitidos: ["org-2"], categoria: "Educação" },
+  { id: "c-9", nome: "Relatório de frequência escolar", label: "Frequência Escolar", tipo: "texto", orgaosPermitidos: ["org-2"], categoria: "Educação" },
+  { id: "c-10", nome: "Infraestrutura de escolas", label: "Infraestrutura Escolas", tipo: "texto", orgaosPermitidos: ["org-2"], categoria: "Educação" },
   // Segurança
-  { id: "c-11", nome: "Índice de ocorrências", tipo: "numerico", orgaosIds: ["org-3"] },
-  { id: "c-12", nome: "Efetivo policial por região", tipo: "numerico", orgaosIds: ["org-3"] },
-  { id: "c-13", nome: "Despesas com viaturas", tipo: "monetario", orgaosIds: ["org-3"] },
+  { id: "c-11", nome: "Índice de ocorrências", label: "Ocorrências", tipo: "numero", orgaosPermitidos: ["org-3"], categoria: "Segurança" },
+  { id: "c-12", nome: "Efetivo policial por região", label: "Efetivo Policial", tipo: "numero", orgaosPermitidos: ["org-3"], categoria: "Segurança" },
+  { id: "c-13", nome: "Despesas com viaturas", label: "Despesas Viaturas", tipo: "moeda", orgaosPermitidos: ["org-3"], categoria: "Segurança" },
   // Infraestrutura
-  { id: "c-14", nome: "Planilha de obras públicas", tipo: "arquivo", orgaosIds: ["org-4"] },
-  { id: "c-15", nome: "Contratos de licitação", tipo: "arquivo", orgaosIds: ["org-4"] },
-  { id: "c-16", nome: "Custo de obras em andamento", tipo: "monetario", orgaosIds: ["org-4"] },
-  { id: "c-17", nome: "Prazo de entrega de obras", tipo: "data", orgaosIds: ["org-4"] },
+  { id: "c-14", nome: "Planilha de obras públicas", label: "Obras Públicas", tipo: "texto", orgaosPermitidos: ["org-4"], categoria: "Infraestrutura" },
+  { id: "c-15", nome: "Contratos de licitação", label: "Contratos Licitação", tipo: "texto", orgaosPermitidos: ["org-4"], categoria: "Infraestrutura" },
+  { id: "c-16", nome: "Custo de obras em andamento", label: "Custo Obras", tipo: "moeda", orgaosPermitidos: ["org-4"], categoria: "Infraestrutura" },
+  { id: "c-17", nome: "Prazo de entrega de obras", label: "Prazo Obras", tipo: "data", orgaosPermitidos: ["org-4"], categoria: "Infraestrutura" },
   // Administração
-  { id: "c-18", nome: "Folha de pagamento de servidores", tipo: "monetario", orgaosIds: ["org-5"] },
-  { id: "c-19", nome: "Inventário de bens públicos", tipo: "arquivo", orgaosIds: ["org-5"] },
-  { id: "c-20", nome: "Prestação de contas anual", tipo: "arquivo", orgaosIds: ["org-5"] },
-  { id: "c-21", nome: "Número de servidores ativos", tipo: "numerico", orgaosIds: ["org-5"] },
-  // Compartilhados (mais de um órgão)
-  { id: "c-22", nome: "Execução orçamentária mensal", tipo: "monetario", orgaosIds: ["org-1", "org-2", "org-3", "org-4", "org-5"] },
-  { id: "c-23", nome: "Relatório de transparência", tipo: "arquivo", orgaosIds: ["org-1", "org-2", "org-3", "org-4", "org-5"] },
-  { id: "c-24", nome: "Convênios federais ativos", tipo: "texto", orgaosIds: ["org-1", "org-2", "org-4"] },
-  { id: "c-25", nome: "Despesas com pessoal", tipo: "monetario", orgaosIds: ["org-1", "org-2", "org-3", "org-5"] },
-  { id: "c-26", nome: "Indicadores de desempenho", tipo: "numerico", orgaosIds: ["org-1", "org-2", "org-3", "org-4", "org-5"] },
+  { id: "c-18", nome: "Folha de pagamento de servidores", label: "Folha Pagamento", tipo: "moeda", orgaosPermitidos: ["org-5"], categoria: "Administração" },
+  { id: "c-19", nome: "Inventário de bens públicos", label: "Inventário Bens", tipo: "texto", orgaosPermitidos: ["org-5"], categoria: "Administração" },
+  { id: "c-20", nome: "Prestação de contas anual", label: "Prestação Contas", tipo: "texto", orgaosPermitidos: ["org-5"], categoria: "Administração" },
+  { id: "c-21", nome: "Número de servidores ativos", label: "Servidores Ativos", tipo: "numero", orgaosPermitidos: ["org-5"], categoria: "Administração" },
+  // Compartilhados
+  { id: "c-22", nome: "Execução orçamentária mensal", label: "Execução Orçamentária", tipo: "moeda", orgaosPermitidos: ["org-1", "org-2", "org-3", "org-4", "org-5"], categoria: "Geral" },
+  { id: "c-23", nome: "Relatório de transparência", label: "Transparência", tipo: "texto", orgaosPermitidos: ["org-1", "org-2", "org-3", "org-4", "org-5"], categoria: "Geral" },
+  { id: "c-24", nome: "Convênios federais ativos", label: "Convênios Federais", tipo: "texto", orgaosPermitidos: ["org-1", "org-2", "org-4"], categoria: "Geral" },
+  { id: "c-25", nome: "Despesas com pessoal", label: "Despesas Pessoal", tipo: "moeda", orgaosPermitidos: ["org-1", "org-2", "org-3", "org-5"], categoria: "Geral" },
+  { id: "c-26", nome: "Indicadores de desempenho", label: "Indicadores Desempenho", tipo: "numero", orgaosPermitidos: ["org-1", "org-2", "org-3", "org-4", "org-5"], categoria: "Geral" },
 ];
 
 // ============ MOCK SOLICITATIONS ============
 
-function gerarItens(orgaoId: string, campos: string[], validacoes: ItemValidacao[], valores: (string | undefined)[]): ItemSolicitacao[] {
-  return campos.map((cId, i) => {
-    const campo = camposPlanilha.find(c => c.id === cId)!;
-    return {
-      id: `item-${orgaoId}-${cId}`,
-      campoId: cId,
-      campoNome: campo.nome,
-      campoTipo: campo.tipo,
-      orgaoId,
-      valorRecebido: valores[i],
-      validacao: validacoes[i],
-    };
-  });
-}
-
 export const mockSolicitacoes: Solicitacao[] = [
   {
     id: "sol-1",
-    protocolo: "STC-2025-0001",
-    assunto: "Levantamento de gastos com saúde e educação Q1 2025",
-    dataEnvio: "05/01/2025",
-    prazo: "D+7",
+    titulo: "Levantamento de gastos com saúde e educação Q1 2025",
     observacoes: "Prioridade alta, dados necessários para relatório ao TCE.",
+    prazoDias: 7,
     canalNotificacao: "email",
-    statusGeral: "Em Andamento",
-    orgaos: [
-      {
-        orgaoId: "org-1",
-        orgaoNome: "Secretaria de Saúde",
-        status: "Em Andamento",
-        progresso: 60,
-        itens: gerarItens("org-1", ["c-2", "c-5", "c-22"],
-          ["validado", "pendente", "pendente"],
-          ["R$ 4.850,00", undefined, undefined]),
-      },
-      {
-        orgaoId: "org-2",
-        orgaoNome: "Secretaria de Educação",
-        status: "Pendente",
-        progresso: 0,
-        itens: gerarItens("org-2", ["c-7", "c-6", "c-22"],
-          ["pendente", "pendente", "pendente"],
-          [undefined, undefined, undefined]),
-      },
-    ],
+    orgaosSelecionados: ["org-1", "org-2"],
+    camposSolicitados: ["c-2", "c-5", "c-22", "c-7", "c-6"],
+    status: "parcial",
+    createdAt: "2025-01-05",
   },
   {
     id: "sol-2",
-    protocolo: "STC-2025-0002",
-    assunto: "Auditoria de infraestrutura e obras públicas",
-    dataEnvio: "10/01/2025",
-    prazo: "D+15",
-    observacoes: "",
+    titulo: "Auditoria de infraestrutura e obras públicas",
+    prazoDias: 15,
     canalNotificacao: "whatsapp",
-    statusGeral: "Concluída",
-    orgaos: [
-      {
-        orgaoId: "org-4",
-        orgaoNome: "Secretaria de Infraestrutura",
-        status: "Concluída",
-        progresso: 100,
-        itens: gerarItens("org-4", ["c-14", "c-15", "c-16"],
-          ["validado", "validado", "validado"],
-          ["arquivo_obras.pdf", "contrato_2024.pdf", "R$ 12.500.000,00"]),
-      },
-    ],
+    orgaosSelecionados: ["org-4"],
+    camposSolicitados: ["c-14", "c-15", "c-16"],
+    status: "concluida",
+    createdAt: "2025-01-10",
   },
   {
     id: "sol-3",
-    protocolo: "STC-2025-0003",
-    assunto: "Dados de pessoal e folha de pagamento",
-    dataEnvio: "15/01/2025",
-    prazo: "D+7",
+    titulo: "Dados de pessoal e folha de pagamento",
     observacoes: "Incluir dados de comissionados.",
-    canalNotificacao: "ambos",
-    statusGeral: "Em Andamento",
-    orgaos: [
-      {
-        orgaoId: "org-5",
-        orgaoNome: "Secretaria de Administração",
-        status: "Em Andamento",
-        progresso: 50,
-        itens: gerarItens("org-5", ["c-18", "c-21", "c-25"],
-          ["validado", "recusado", "pendente"],
-          ["R$ 45.200.000,00", "1.247", undefined]),
-      },
-      {
-        orgaoId: "org-1",
-        orgaoNome: "Secretaria de Saúde",
-        status: "Pendente",
-        progresso: 0,
-        itens: gerarItens("org-1", ["c-25"],
-          ["pendente"],
-          [undefined]),
-      },
-    ],
+    prazoDias: 7,
+    canalNotificacao: "email",
+    orgaosSelecionados: ["org-5", "org-1"],
+    camposSolicitados: ["c-18", "c-21", "c-25"],
+    status: "parcial",
+    createdAt: "2025-01-15",
   },
   {
     id: "sol-4",
-    protocolo: "STC-2025-0004",
-    assunto: "Indicadores de segurança pública",
-    dataEnvio: "20/01/2025",
-    prazo: "D+3",
-    observacoes: "",
+    titulo: "Indicadores de segurança pública",
+    prazoDias: 3,
     canalNotificacao: "email",
-    statusGeral: "Atrasada",
-    orgaos: [
-      {
-        orgaoId: "org-3",
-        orgaoNome: "Secretaria de Segurança",
-        status: "Atrasada",
-        progresso: 33,
-        itens: gerarItens("org-3", ["c-11", "c-12", "c-13"],
-          ["validado", "pendente", "pendente"],
-          ["1.423", undefined, undefined]),
-      },
-    ],
+    orgaosSelecionados: ["org-3"],
+    camposSolicitados: ["c-11", "c-12", "c-13"],
+    status: "aberta",
+    createdAt: "2025-01-20",
   },
   {
     id: "sol-5",
-    protocolo: "STC-2025-0005",
-    assunto: "Execução orçamentária geral - todos os órgãos",
-    dataEnvio: "25/01/2025",
-    prazo: "D+15",
+    titulo: "Execução orçamentária geral - todos os órgãos",
     observacoes: "Dados consolidados para transparência.",
+    prazoDias: 15,
     canalNotificacao: "email",
-    statusGeral: "Pendente",
-    orgaos: orgaos.map(org => ({
-      orgaoId: org.id,
-      orgaoNome: org.nome,
-      status: "Pendente" as SolicitacaoStatus,
-      progresso: 0,
-      itens: gerarItens(org.id, ["c-22", "c-26"],
-        ["pendente", "pendente"],
-        [undefined, undefined]),
-    })),
+    orgaosSelecionados: ["org-1", "org-2", "org-3", "org-4", "org-5"],
+    camposSolicitados: ["c-22", "c-26"],
+    status: "aberta",
+    createdAt: "2025-01-25",
+  },
+];
+
+// ============ MOCK RESPOSTAS ============
+
+export const mockRespostas: RespostaOrgao[] = [
+  {
+    id: "resp-1",
+    solicitacaoId: "sol-1",
+    orgaoId: "org-1",
+    status: "em_validacao",
+    createdAt: "2025-01-05",
+    updatedAt: "2025-03-10",
+    itens: [
+      { id: "ri-1", campoId: "c-2", valor: "R$ 4.850,00", tipoValor: "moeda", origem: "preenchimento_manual", validacaoStatus: "validado" },
+      { id: "ri-2", campoId: "c-5", valor: "", tipoValor: "moeda", origem: "preenchimento_manual", validacaoStatus: "pendente" },
+      { id: "ri-3", campoId: "c-22", valor: "", tipoValor: "moeda", origem: "preenchimento_manual", validacaoStatus: "pendente" },
+    ],
+  },
+  {
+    id: "resp-2",
+    solicitacaoId: "sol-1",
+    orgaoId: "org-2",
+    status: "pendente",
+    createdAt: "2025-01-05",
+    updatedAt: "2025-01-05",
+    itens: [
+      { id: "ri-4", campoId: "c-7", valor: "", tipoValor: "moeda", origem: "preenchimento_manual", validacaoStatus: "pendente" },
+      { id: "ri-5", campoId: "c-6", valor: "", tipoValor: "numero", origem: "preenchimento_manual", validacaoStatus: "pendente" },
+      { id: "ri-6", campoId: "c-22", valor: "", tipoValor: "moeda", origem: "preenchimento_manual", validacaoStatus: "pendente" },
+    ],
+  },
+  {
+    id: "resp-3",
+    solicitacaoId: "sol-2",
+    orgaoId: "org-4",
+    status: "concluido",
+    createdAt: "2025-01-10",
+    updatedAt: "2025-03-08",
+    itens: [
+      { id: "ri-7", campoId: "c-14", valor: "arquivo_obras.pdf", tipoValor: "texto", origem: "arquivo", validacaoStatus: "validado" },
+      { id: "ri-8", campoId: "c-15", valor: "contrato_2024.pdf", tipoValor: "texto", origem: "arquivo", validacaoStatus: "validado" },
+      { id: "ri-9", campoId: "c-16", valor: "R$ 12.500.000,00", tipoValor: "moeda", origem: "preenchimento_manual", validacaoStatus: "validado" },
+    ],
+  },
+  {
+    id: "resp-4",
+    solicitacaoId: "sol-3",
+    orgaoId: "org-5",
+    status: "em_validacao",
+    createdAt: "2025-01-15",
+    updatedAt: "2025-03-12",
+    itens: [
+      { id: "ri-10", campoId: "c-18", valor: "R$ 45.200.000,00", tipoValor: "moeda", origem: "preenchimento_manual", validacaoStatus: "validado" },
+      { id: "ri-11", campoId: "c-21", valor: 1247, tipoValor: "numero", origem: "preenchimento_manual", validacaoStatus: "recusado", motivoRecusa: "Valor inconsistente com período anterior" },
+      { id: "ri-12", campoId: "c-25", valor: "", tipoValor: "moeda", origem: "preenchimento_manual", validacaoStatus: "pendente" },
+    ],
+  },
+  {
+    id: "resp-5",
+    solicitacaoId: "sol-3",
+    orgaoId: "org-1",
+    status: "pendente",
+    createdAt: "2025-01-15",
+    updatedAt: "2025-01-15",
+    itens: [
+      { id: "ri-13", campoId: "c-25", valor: "", tipoValor: "moeda", origem: "preenchimento_manual", validacaoStatus: "pendente" },
+    ],
+  },
+  {
+    id: "resp-6",
+    solicitacaoId: "sol-4",
+    orgaoId: "org-3",
+    status: "enviado",
+    createdAt: "2025-01-20",
+    updatedAt: "2025-03-05",
+    itens: [
+      { id: "ri-14", campoId: "c-11", valor: 1423, tipoValor: "numero", origem: "preenchimento_manual", validacaoStatus: "validado" },
+      { id: "ri-15", campoId: "c-12", valor: "", tipoValor: "numero", origem: "preenchimento_manual", validacaoStatus: "pendente" },
+      { id: "ri-16", campoId: "c-13", valor: "", tipoValor: "moeda", origem: "preenchimento_manual", validacaoStatus: "pendente" },
+    ],
+  },
+];
+
+export const mockReenvios: ReenvioItem[] = [
+  {
+    id: "reenvio-1",
+    solicitacaoOriginalId: "sol-3",
+    respostaOrgaoId: "resp-4",
+    orgaoId: "org-5",
+    campoId: "c-21",
+    motivo: "Valor inconsistente com período anterior",
+    status: "aberto",
+    createdAt: "2025-03-12",
   },
 ];
 
@@ -260,15 +289,15 @@ export const mockSolicitacoes: Solicitacao[] = [
 export const mockChats: ChatConversation[] = [
   {
     id: "chat-1",
-    protocolo: "STC-2025-0001",
-    orgao: "Secretaria de Saúde",
+    protocolo: "SOL-2025-0001",
+    orgaoNome: "Secretaria de Saúde",
     orgaoId: "org-1",
     solicitacaoId: "sol-1",
+    respostaOrgaoId: "resp-1",
     ultimoContato: "10/03/2025 14:30",
-    progresso: 60,
-    itens: mockSolicitacoes[0].orgaos[0].itens,
+    progresso: 33,
     messages: [
-      { id: "m1", sender: "bot", text: "Olá! Sou o assistente de coleta da STC-MA. Protocolo STC-2025-0001 — Secretaria de Saúde.", time: "14:00" },
+      { id: "m1", sender: "bot", text: "Olá! Sou o assistente de coleta da STC-MA. Solicitação SOL-2025-0001 — Secretaria de Saúde.", time: "14:00" },
       { id: "m2", sender: "bot", text: "Campos solicitados: Salário de enfermeiros, Despesas com medicamentos, Execução orçamentária mensal.", time: "14:01" },
       { id: "m3", sender: "user", text: "Já enviei o valor de salário dos enfermeiros.", time: "14:05" },
       { id: "m4", sender: "bot", text: "Recebido! O valor de R$ 4.850,00 foi registrado para 'Salário de enfermeiros'. Faltam: Despesas com medicamentos e Execução orçamentária mensal.", time: "14:10" },
@@ -276,30 +305,50 @@ export const mockChats: ChatConversation[] = [
   },
   {
     id: "chat-2",
-    protocolo: "STC-2025-0001",
-    orgao: "Secretaria de Educação",
+    protocolo: "SOL-2025-0001",
+    orgaoNome: "Secretaria de Educação",
     orgaoId: "org-2",
     solicitacaoId: "sol-1",
+    respostaOrgaoId: "resp-2",
     ultimoContato: "09/03/2025 10:15",
     progresso: 0,
-    itens: mockSolicitacoes[0].orgaos[1].itens,
     messages: [
-      { id: "m1", sender: "bot", text: "Bem-vindo. Protocolo STC-2025-0001 — Secretaria de Educação.", time: "10:00" },
+      { id: "m1", sender: "bot", text: "Bem-vindo. Solicitação SOL-2025-0001 — Secretaria de Educação.", time: "10:00" },
       { id: "m2", sender: "bot", text: "Campos pendentes: Merenda escolar - gastos, Dados de matrícula escolar, Execução orçamentária mensal.", time: "10:01" },
     ],
   },
   {
     id: "chat-3",
-    protocolo: "STC-2025-0002",
-    orgao: "Secretaria de Infraestrutura",
+    protocolo: "SOL-2025-0002",
+    orgaoNome: "Secretaria de Infraestrutura",
     orgaoId: "org-4",
     solicitacaoId: "sol-2",
+    respostaOrgaoId: "resp-3",
     ultimoContato: "08/03/2025 16:45",
     progresso: 100,
-    itens: mockSolicitacoes[1].orgaos[0].itens,
     messages: [
-      { id: "m1", sender: "bot", text: "Protocolo STC-2025-0002 — Todos os documentos foram recebidos e validados!", time: "16:30" },
+      { id: "m1", sender: "bot", text: "Solicitação SOL-2025-0002 — Todos os documentos foram recebidos e validados!", time: "16:30" },
       { id: "m2", sender: "user", text: "Ótimo, obrigado pela confirmação.", time: "16:35" },
     ],
   },
 ];
+
+// ============ HELPERS ============
+
+export function getCampoById(id: string): CampoPlanilha | undefined {
+  return camposPlanilha.find(c => c.id === id);
+}
+
+export function getOrgaoById(id: string): Orgao | undefined {
+  return orgaos.find(o => o.id === id);
+}
+
+export function getRespostasForSolicitacao(solId: string): RespostaOrgao[] {
+  return mockRespostas.filter(r => r.solicitacaoId === solId);
+}
+
+export function calcProgresso(resposta: RespostaOrgao): number {
+  if (resposta.itens.length === 0) return 0;
+  const done = resposta.itens.filter(i => i.validacaoStatus === "validado").length;
+  return Math.round((done / resposta.itens.length) * 100);
+}
