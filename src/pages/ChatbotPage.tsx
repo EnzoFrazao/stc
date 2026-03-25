@@ -264,7 +264,8 @@ const ChatbotPage = () => {
                     <Badge variant="outline" className="text-[10px]">{item.tipoValor}</Badge>
                   </Label>
                   <Input
-                    type={item.tipoValor === "numero" ? "number" : item.tipoValor === "data" ? "date" : "text"}
+                    type={item.tipoValor === "numero" ? "number" : item.tipoValor === "moeda" ? "number" : item.tipoValor === "data" ? "date" : "text"}
+                    step={item.tipoValor === "moeda" ? "0.01" : undefined}
                     placeholder={tipoPlaceholder[item.tipoValor]}
                     value={formValues[item.id] || ""}
                     onChange={e => setFormValues(prev => ({ ...prev, [item.id]: e.target.value }))}
