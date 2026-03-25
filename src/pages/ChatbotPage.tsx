@@ -235,7 +235,7 @@ const ChatbotPage = () => {
                           ? <CheckCircle className="h-4 w-4 text-status-completed" />
                           : <AlertCircle className="h-4 w-4 text-status-pending" />
                         }
-                        <span className="truncate">{campo?.nome || item.campoId}</span>
+                        <span className="truncate">{campo?.label || campo?.nome || item.campoId}</span>
                       </span>
                     </div>
                   );
@@ -260,11 +260,12 @@ const ChatbotPage = () => {
               return (
                 <div key={item.id} className="space-y-1.5">
                   <Label className="flex items-center gap-2">
-                    {campo?.nome || item.campoId}
+                    {campo?.label || campo?.nome || item.campoId}
                     <Badge variant="outline" className="text-[10px]">{item.tipoValor}</Badge>
                   </Label>
                   <Input
-                    type={item.tipoValor === "numero" ? "number" : item.tipoValor === "data" ? "date" : "text"}
+                    type={item.tipoValor === "numero" ? "number" : item.tipoValor === "moeda" ? "number" : item.tipoValor === "data" ? "date" : "text"}
+                    step={item.tipoValor === "moeda" ? "0.01" : undefined}
                     placeholder={tipoPlaceholder[item.tipoValor]}
                     value={formValues[item.id] || ""}
                     onChange={e => setFormValues(prev => ({ ...prev, [item.id]: e.target.value }))}
@@ -298,7 +299,7 @@ const ChatbotPage = () => {
               const campo = getCampoById(item.campoId);
               return (
                 <div key={item.id} className="space-y-1.5">
-                  <Label>{campo?.nome || item.campoId}</Label>
+                  <Label>{campo?.label || campo?.nome || item.campoId}</Label>
                   <Input
                     value={extractedData[item.id] || ""}
                     onChange={e => setExtractedData(prev => ({ ...prev, [item.id]: e.target.value }))}

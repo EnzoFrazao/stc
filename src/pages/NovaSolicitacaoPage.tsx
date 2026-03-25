@@ -172,7 +172,8 @@ const NovaSolicitacaoPage = () => {
                             >
                               <div className="flex items-center gap-3">
                                 <Checkbox checked={checked} className="pointer-events-none" />
-                                <span>{campo.nome}</span>
+                                <span>{campo.label}</span>
+                                {campo.categoria && <span className="text-xs text-muted-foreground">({campo.categoria})</span>}
                               </div>
                               <Badge className={`text-xs ${tipoBadgeColor[campo.tipo]}`}>{tipoLabel[campo.tipo]}</Badge>
                             </button>
@@ -257,7 +258,7 @@ const NovaSolicitacaoPage = () => {
                         const campo = camposPlanilha.find(c => c.id === id)!;
                         return (
                           <div key={id} className="flex items-center justify-between rounded-md bg-muted px-3 py-2">
-                            <span className="truncate mr-2">{campo.nome}</span>
+                            <span className="truncate mr-2">{campo.label}</span>
                             <Badge className={`text-[10px] shrink-0 ${tipoBadgeColor[campo.tipo]}`}>{tipoLabel[campo.tipo]}</Badge>
                           </div>
                         );
