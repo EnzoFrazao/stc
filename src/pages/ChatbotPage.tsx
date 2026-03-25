@@ -299,7 +299,7 @@ const ChatbotPage = () => {
               const campo = getCampoById(item.campoId);
               return (
                 <div key={item.id} className="space-y-1.5">
-                  <Label>{campo?.nome || item.campoId}</Label>
+                  <Label>{campo?.label || campo?.nome || item.campoId}</Label>
                   <Input
                     value={extractedData[item.id] || ""}
                     onChange={e => setExtractedData(prev => ({ ...prev, [item.id]: e.target.value }))}
