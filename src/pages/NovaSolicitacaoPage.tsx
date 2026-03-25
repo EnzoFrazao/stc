@@ -172,7 +172,8 @@ const NovaSolicitacaoPage = () => {
                             >
                               <div className="flex items-center gap-3">
                                 <Checkbox checked={checked} className="pointer-events-none" />
-                                <span>{campo.nome}</span>
+                                <span>{campo.label}</span>
+                                {campo.categoria && <span className="text-xs text-muted-foreground">({campo.categoria})</span>}
                               </div>
                               <Badge className={`text-xs ${tipoBadgeColor[campo.tipo]}`}>{tipoLabel[campo.tipo]}</Badge>
                             </button>
