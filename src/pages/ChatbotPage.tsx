@@ -235,7 +235,7 @@ const ChatbotPage = () => {
                           ? <CheckCircle className="h-4 w-4 text-status-completed" />
                           : <AlertCircle className="h-4 w-4 text-status-pending" />
                         }
-                        <span className="truncate">{campo?.nome || item.campoId}</span>
+                        <span className="truncate">{campo?.label || campo?.nome || item.campoId}</span>
                       </span>
                     </div>
                   );
