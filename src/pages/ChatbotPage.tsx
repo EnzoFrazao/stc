@@ -6,26 +6,28 @@ import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
-import { mockChats, ChatConversation, ChatMessage, ItemSolicitacao, camposPlanilha } from "@/data/mockData";
-import { Send, Paperclip, Bot, User, CheckCircle, AlertCircle, Upload, FileText, PenLine, ImageIcon, AlertTriangle } from "lucide-react";
+import {
+  mockChats, mockRespostas, ChatConversation, ChatMessage, RespostaItem,
+  getCampoById, TipoCampo,
+} from "@/data/mockData";
+import { Send, Paperclip, Bot, User, CheckCircle, AlertCircle, Upload, PenLine, ImageIcon, AlertTriangle } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import AppHeader from "@/components/AppHeader";
 
-const tipoPlaceholder: Record<string, string> = {
+const tipoPlaceholder: Record<TipoCampo, string> = {
   texto: "Digite o texto...",
-  monetario: "R$ 0,00",
-  numerico: "0",
+  moeda: "R$ 0,00",
+  numero: "0",
   data: "DD/MM/AAAA",
-  arquivo: "Selecione um arquivo",
 };
 
 const ChatbotPage = () => {
   const { toast } = useToast();
   const [conversations, setConversations] = useState<ChatConversation[]>(mockChats);
+  const [respostas, setRespostas] = useState(mockRespostas);
   const [activeId, setActiveId] = useState(mockChats[0].id);
   const [input, setInput] = useState("");
 
-  // Modals
   const [showFormModal, setShowFormModal] = useState(false);
   const [showImageModal, setShowImageModal] = useState(false);
   const [showBadImageModal, setShowBadImageModal] = useState(false);
@@ -33,7 +35,8 @@ const ChatbotPage = () => {
   const [extractedData, setExtractedData] = useState<Record<string, string>>({});
 
   const active = conversations.find(c => c.id === activeId)!;
-  const pendingItens = active.itens.filter(i => i.validacao === "pendente");
+  const resposta = respostas.find(r => r.id === active.respostaOrgaoId);
+  const pendingItens = resposta?.itens.filter(i => i.validacaoStatus === "pendente" && !i.valor) || [];
 
   const addMessage = (msgs: ChatMessage[]) => {
     setConversations(prev =>
@@ -55,7 +58,6 @@ const ChatbotPage = () => {
     setInput("");
   };
 
-  // Handle "Preencher Dados" — open dynamic form
   const openFormModal = () => {
     const vals: Record<string, string> = {};
     pendingItens.forEach(i => { vals[i.id] = ""; });
@@ -71,47 +73,37 @@ const ChatbotPage = () => {
       return;
     }
 
-    setConversations(prev =>
-      prev.map(c => {
-        if (c.id !== activeId) return c;
-        const newItens = c.itens.map(i => {
-          if (formValues[i.id]?.trim()) {
-            return { ...i, valorRecebido: formValues[i.id].trim() };
-          }
-          return i;
-        });
-        const done = newItens.filter(i => i.valorRecebido).length;
-        const botMsg: ChatMessage = {
-          id: `m-${Date.now()}`,
-          sender: "bot",
-          text: `Dados preenchidos recebidos para ${filledItems.length} campo(s): ${filledItems.map(i => i.campoNome).join(", ")}. Aguardando validação pela Secretaria.`,
-          time,
-        };
-        return {
-          ...c,
-          itens: newItens,
-          progresso: Math.round((done / newItens.length) * 100),
-          messages: [...c.messages, botMsg],
-        };
-      })
-    );
+    setRespostas(prev => prev.map(r => {
+      if (r.id !== active.respostaOrgaoId) return r;
+      return {
+        ...r,
+        itens: r.itens.map(i => formValues[i.id]?.trim() ? { ...i, valor: formValues[i.id].trim(), origem: "preenchimento_manual" as const } : i),
+        status: "enviado" as const,
+        updatedAt: new Date().toISOString().split("T")[0],
+      };
+    }));
+
+    const botMsg: ChatMessage = {
+      id: `m-${Date.now()}`,
+      sender: "bot",
+      text: `Dados preenchidos recebidos para ${filledItems.length} campo(s): ${filledItems.map(i => getCampoById(i.campoId)?.nome || i.campoId).join(", ")}. Aguardando validação pela Secretaria.`,
+      time,
+    };
+    addMessage([botMsg]);
     setShowFormModal(false);
     toast({ title: "Dados enviados!", description: "Seus dados foram registrados com sucesso." });
   };
 
-  // Handle file upload / image OCR simulation
   const handleFileUpload = () => {
-    // Simulate: 50% chance of "bad image quality"
     const isBadQuality = Math.random() > 0.5;
     if (isBadQuality) {
       setShowBadImageModal(true);
     } else {
-      // Simulate OCR extraction
       const extracted: Record<string, string> = {};
       pendingItens.forEach(i => {
-        if (i.campoTipo === "monetario") extracted[i.id] = "R$ " + (Math.floor(Math.random() * 90000) + 1000).toLocaleString("pt-BR");
-        else if (i.campoTipo === "numerico") extracted[i.id] = String(Math.floor(Math.random() * 9000) + 100);
-        else if (i.campoTipo === "data") extracted[i.id] = "15/03/2025";
+        if (i.tipoValor === "moeda") extracted[i.id] = "R$ " + (Math.floor(Math.random() * 90000) + 1000).toLocaleString("pt-BR");
+        else if (i.tipoValor === "numero") extracted[i.id] = String(Math.floor(Math.random() * 9000) + 100);
+        else if (i.tipoValor === "data") extracted[i.id] = "15/03/2025";
         else extracted[i.id] = "Dado extraído automaticamente";
       });
       setExtractedData(extracted);
@@ -121,53 +113,36 @@ const ChatbotPage = () => {
 
   const confirmExtractedData = () => {
     const time = new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
-    setConversations(prev =>
-      prev.map(c => {
-        if (c.id !== activeId) return c;
-        const newItens = c.itens.map(i => {
-          if (extractedData[i.id]) return { ...i, valorRecebido: extractedData[i.id] };
-          return i;
-        });
-        const done = newItens.filter(i => i.valorRecebido).length;
-        const botMsg: ChatMessage = {
-          id: `m-${Date.now()}`,
-          sender: "bot",
-          text: `Dados extraídos da imagem foram confirmados e registrados. ${done} de ${newItens.length} campos preenchidos.`,
-          time,
-        };
-        return {
-          ...c,
-          itens: newItens,
-          progresso: Math.round((done / newItens.length) * 100),
-          messages: [...c.messages, botMsg],
-        };
-      })
-    );
+    setRespostas(prev => prev.map(r => {
+      if (r.id !== active.respostaOrgaoId) return r;
+      return {
+        ...r,
+        itens: r.itens.map(i => extractedData[i.id] ? { ...i, valor: extractedData[i.id], origem: "imagem" as const } : i),
+        status: "enviado" as const,
+        updatedAt: new Date().toISOString().split("T")[0],
+      };
+    }));
+    const botMsg: ChatMessage = {
+      id: `m-${Date.now()}`,
+      sender: "bot",
+      text: "Dados extraídos da imagem foram confirmados e registrados.",
+      time,
+    };
+    addMessage([botMsg]);
     setShowImageModal(false);
     toast({ title: "Dados confirmados!", description: "Os dados extraídos da imagem foram registrados." });
   };
 
-  const handleUploadFile = (checkIndex: number) => {
-    const item = active.itens[checkIndex];
-    setConversations(prev =>
-      prev.map(c => {
-        if (c.id !== activeId) return c;
-        const newItens = [...c.itens];
-        newItens[checkIndex] = { ...newItens[checkIndex], valorRecebido: "arquivo_enviado.pdf" };
-        const done = newItens.filter(i => i.valorRecebido).length;
-        return { ...c, itens: newItens, progresso: Math.round((done / newItens.length) * 100) };
-      })
-    );
-    toast({ title: "Arquivo enviado", description: `Arquivo para "${item.campoNome}" registrado.` });
-  };
+  const currentProgresso = resposta ? (() => {
+    const done = resposta.itens.filter(i => !!i.valor || i.validacaoStatus === "validado").length;
+    return Math.round((done / resposta.itens.length) * 100);
+  })() : 0;
 
   return (
     <div className="min-h-screen bg-accent flex flex-col">
       <AppHeader title="Assistente de Coleta de Dados" showBack />
       <main className="flex-1 container py-6 flex flex-col lg:flex-row gap-6 min-h-0">
-        {/* Chat column */}
         <div className="flex-1 flex flex-col lg:w-[70%] min-h-0">
-          {/* Protocol list */}
           <div className="flex gap-2 mb-4 overflow-x-auto pb-2">
             {conversations.map(c => (
               <button
@@ -180,12 +155,11 @@ const ChatbotPage = () => {
                 }`}
               >
                 <div className="font-medium">{c.protocolo}</div>
-                <div className="text-xs opacity-80">{c.orgao}</div>
+                <div className="text-xs opacity-80">{c.orgaoNome}</div>
               </button>
             ))}
           </div>
 
-          {/* Messages */}
           <Card className="flex-1 border-0 shadow-lg flex flex-col min-h-0 overflow-hidden">
             <CardContent className="flex-1 overflow-y-auto p-4 space-y-3">
               {active.messages.map(msg => (
@@ -209,7 +183,6 @@ const ChatbotPage = () => {
               ))}
             </CardContent>
 
-            {/* Action buttons */}
             {pendingItens.length > 0 && (
               <div className="border-t px-4 py-3 flex gap-3">
                 <Button className="flex-1 bg-secondary hover:bg-secondary/90 gap-2" onClick={handleFileUpload}>
@@ -237,7 +210,6 @@ const ChatbotPage = () => {
           </Card>
         </div>
 
-        {/* Compliance panel */}
         <div className="lg:w-[30%]">
           <Card className="border-0 shadow-lg animate-slide-up sticky top-24">
             <CardHeader className="pb-3">
@@ -246,30 +218,28 @@ const ChatbotPage = () => {
             <CardContent className="space-y-4">
               <div>
                 <div className="flex items-center justify-between mb-2">
-                  <span className="text-sm font-medium">{active.progresso}% concluído</span>
+                  <span className="text-sm font-medium">{currentProgresso}% concluído</span>
                   <span className="text-xs text-muted-foreground">{active.protocolo}</span>
                 </div>
-                <Progress value={active.progresso} className="h-3" />
+                <Progress value={currentProgresso} className="h-3" />
               </div>
               <div className="space-y-2">
-                {active.itens.map((item, i) => (
-                  <div key={item.id} className={`flex items-center justify-between rounded-lg p-3 text-sm ${
-                    item.valorRecebido ? "bg-status-completed-bg" : "bg-status-pending-bg"
-                  }`}>
-                    <span className="flex items-center gap-2">
-                      {item.valorRecebido
-                        ? <CheckCircle className="h-4 w-4 text-status-completed" />
-                        : <AlertCircle className="h-4 w-4 text-status-pending" />
-                      }
-                      <span className="truncate">{item.campoNome}</span>
-                    </span>
-                    {!item.valorRecebido && (
-                      <Button size="sm" variant="outline" className="h-7 text-xs gap-1 shrink-0" onClick={() => handleUploadFile(i)}>
-                        <Upload className="h-3 w-3" /> Carregar
-                      </Button>
-                    )}
-                  </div>
-                ))}
+                {resposta?.itens.map(item => {
+                  const campo = getCampoById(item.campoId);
+                  return (
+                    <div key={item.id} className={`flex items-center justify-between rounded-lg p-3 text-sm ${
+                      item.valor ? "bg-status-completed-bg" : "bg-status-pending-bg"
+                    }`}>
+                      <span className="flex items-center gap-2">
+                        {item.valor
+                          ? <CheckCircle className="h-4 w-4 text-status-completed" />
+                          : <AlertCircle className="h-4 w-4 text-status-pending" />
+                        }
+                        <span className="truncate">{campo?.nome || item.campoId}</span>
+                      </span>
+                    </div>
+                  );
+                })}
               </div>
             </CardContent>
           </Card>
@@ -285,20 +255,23 @@ const ChatbotPage = () => {
             </DialogTitle>
           </DialogHeader>
           <div className="space-y-4">
-            {pendingItens.map(item => (
-              <div key={item.id} className="space-y-1.5">
-                <Label className="flex items-center gap-2">
-                  {item.campoNome}
-                  <Badge variant="outline" className="text-[10px]">{item.campoTipo}</Badge>
-                </Label>
-                <Input
-                  type={item.campoTipo === "numerico" ? "number" : item.campoTipo === "data" ? "date" : "text"}
-                  placeholder={tipoPlaceholder[item.campoTipo]}
-                  value={formValues[item.id] || ""}
-                  onChange={e => setFormValues(prev => ({ ...prev, [item.id]: e.target.value }))}
-                />
-              </div>
-            ))}
+            {pendingItens.map(item => {
+              const campo = getCampoById(item.campoId);
+              return (
+                <div key={item.id} className="space-y-1.5">
+                  <Label className="flex items-center gap-2">
+                    {campo?.nome || item.campoId}
+                    <Badge variant="outline" className="text-[10px]">{item.tipoValor}</Badge>
+                  </Label>
+                  <Input
+                    type={item.tipoValor === "numero" ? "number" : item.tipoValor === "data" ? "date" : "text"}
+                    placeholder={tipoPlaceholder[item.tipoValor]}
+                    value={formValues[item.id] || ""}
+                    onChange={e => setFormValues(prev => ({ ...prev, [item.id]: e.target.value }))}
+                  />
+                </div>
+              );
+            })}
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setShowFormModal(false)}>Cancelar</Button>
@@ -321,15 +294,18 @@ const ChatbotPage = () => {
             Revise os dados extraídos automaticamente. Edite se necessário antes de confirmar.
           </p>
           <div className="space-y-4">
-            {pendingItens.map(item => (
-              <div key={item.id} className="space-y-1.5">
-                <Label>{item.campoNome}</Label>
-                <Input
-                  value={extractedData[item.id] || ""}
-                  onChange={e => setExtractedData(prev => ({ ...prev, [item.id]: e.target.value }))}
-                />
-              </div>
-            ))}
+            {pendingItens.map(item => {
+              const campo = getCampoById(item.campoId);
+              return (
+                <div key={item.id} className="space-y-1.5">
+                  <Label>{campo?.nome || item.campoId}</Label>
+                  <Input
+                    value={extractedData[item.id] || ""}
+                    onChange={e => setExtractedData(prev => ({ ...prev, [item.id]: e.target.value }))}
+                  />
+                </div>
+              );
+            })}
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setShowImageModal(false)}>Cancelar</Button>
@@ -354,12 +330,11 @@ const ChatbotPage = () => {
           <div className="flex gap-3 mt-4">
             <Button className="flex-1 gap-2" variant="outline" onClick={() => {
               setShowBadImageModal(false);
-              // Simulate retrying with good result
               const extracted: Record<string, string> = {};
               pendingItens.forEach(i => {
-                if (i.campoTipo === "monetario") extracted[i.id] = "R$ " + (Math.floor(Math.random() * 90000) + 1000).toLocaleString("pt-BR");
-                else if (i.campoTipo === "numerico") extracted[i.id] = String(Math.floor(Math.random() * 9000) + 100);
-                else if (i.campoTipo === "data") extracted[i.id] = "15/03/2025";
+                if (i.tipoValor === "moeda") extracted[i.id] = "R$ " + (Math.floor(Math.random() * 90000) + 1000).toLocaleString("pt-BR");
+                else if (i.tipoValor === "numero") extracted[i.id] = String(Math.floor(Math.random() * 9000) + 100);
+                else if (i.tipoValor === "data") extracted[i.id] = "15/03/2025";
                 else extracted[i.id] = "Dado extraído";
               });
               setExtractedData(extracted);
