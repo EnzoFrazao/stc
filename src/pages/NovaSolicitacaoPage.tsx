@@ -175,7 +175,11 @@ const NovaSolicitacaoPage = () => {
                               }`}
                             >
                               <div className="flex items-center gap-3">
-                                <Checkbox checked={checked} className="pointer-events-none" />
+                                <div className={`h-4 w-4 rounded border-2 flex items-center justify-center transition-colors ${
+                                  checked ? "bg-secondary border-secondary" : "border-muted-foreground/40"
+                                }`}>
+                                  {checked && <span className="text-white text-[10px] font-bold">✓</span>}
+                                </div>
                                 <span>{campo.label}</span>
                                 {campo.categoria && <span className="text-xs text-muted-foreground">({campo.categoria})</span>}
                               </div>
