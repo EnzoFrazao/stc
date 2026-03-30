@@ -153,7 +153,7 @@ export const mockSolicitacoes: Solicitacao[] = [
     canalNotificacao: "whatsapp",
     orgaosSelecionados: ["org-4"],
     camposSolicitados: ["c-14", "c-15", "c-16"],
-    status: "concluida",
+    status: "enviada",
     createdAt: "2025-01-10",
   },
   {
@@ -185,7 +185,7 @@ export const mockSolicitacoes: Solicitacao[] = [
     canalNotificacao: "email",
     orgaosSelecionados: ["org-1", "org-2", "org-3", "org-4", "org-5"],
     camposSolicitados: ["c-22", "c-26"],
-    status: "aberta",
+    status: "fechada",
     createdAt: "2025-01-25",
   },
 ];
