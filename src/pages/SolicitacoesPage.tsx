@@ -192,8 +192,9 @@ const SolicitacoesPage = () => {
                     <TableHead>Título</TableHead>
                     <TableHead>Criação</TableHead>
                     <TableHead>Prazo</TableHead>
-                    <TableHead>Status</TableHead>
-                    <TableHead>Ações</TableHead>
+                     <TableHead>Status</TableHead>
+                     <TableHead>Visualizada</TableHead>
+                     <TableHead>Ações</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
