@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Checkbox } from "@/components/ui/checkbox";
+
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { Send, X, Building2, FileSpreadsheet, Bell } from "lucide-react";
@@ -121,7 +121,11 @@ const NovaSolicitacaoPage = () => {
                           }`}
                         >
                           <div className="flex items-center gap-2">
-                            <Checkbox checked={selected} className="pointer-events-none" />
+                            <div className={`h-4 w-4 rounded border-2 flex items-center justify-center transition-colors ${
+                              selected ? "bg-secondary border-secondary" : "border-muted-foreground/40"
+                            }`}>
+                              {selected && <span className="text-white text-[10px] font-bold">✓</span>}
+                            </div>
                             <span className="font-medium">{orgao.nome}</span>
                           </div>
                         </button>
@@ -171,7 +175,11 @@ const NovaSolicitacaoPage = () => {
                               }`}
                             >
                               <div className="flex items-center gap-3">
-                                <Checkbox checked={checked} className="pointer-events-none" />
+                                <div className={`h-4 w-4 rounded border-2 flex items-center justify-center transition-colors ${
+                                  checked ? "bg-secondary border-secondary" : "border-muted-foreground/40"
+                                }`}>
+                                  {checked && <span className="text-white text-[10px] font-bold">✓</span>}
+                                </div>
                                 <span>{campo.label}</span>
                                 {campo.categoria && <span className="text-xs text-muted-foreground">({campo.categoria})</span>}
                               </div>
