@@ -218,6 +218,14 @@ const SolicitacoesPage = () => {
                         <Badge variant="outline" className={statusStyles[s.status]}>{statusLabel[s.status]}</Badge>
                       </TableCell>
                       <TableCell>
+                        <Badge variant="outline" className={s.visualizada
+                          ? "bg-status-enviada-bg text-status-enviada border-status-enviada/30"
+                          : "bg-status-nao-enviada-bg text-status-nao-enviada border-status-nao-enviada/30"
+                        }>
+                          {s.visualizada ? "Sim" : "Não"}
+                        </Badge>
+                      </TableCell>
+                      <TableCell>
                         <Button size="sm" variant="ghost" className="gap-1 text-secondary" onClick={() => setSelected(s)}>
                           <Eye className="h-4 w-4" /> Ver
                         </Button>
