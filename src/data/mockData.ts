@@ -32,6 +32,7 @@ export interface Solicitacao {
   orgaosSelecionados: string[];
   camposSolicitados: string[];
   status: SolicitacaoStatus;
+  visualizada: boolean;
   createdAt: string;
 }
 
@@ -144,6 +145,7 @@ export const mockSolicitacoes: Solicitacao[] = [
     orgaosSelecionados: ["org-1", "org-2"],
     camposSolicitados: ["c-2", "c-5", "c-22", "c-7", "c-6"],
     status: "parcial",
+    visualizada: true,
     createdAt: "2025-01-05",
   },
   {
@@ -154,6 +156,7 @@ export const mockSolicitacoes: Solicitacao[] = [
     orgaosSelecionados: ["org-4"],
     camposSolicitados: ["c-14", "c-15", "c-16"],
     status: "enviada",
+    visualizada: true,
     createdAt: "2025-01-10",
   },
   {
@@ -165,6 +168,7 @@ export const mockSolicitacoes: Solicitacao[] = [
     orgaosSelecionados: ["org-5", "org-1"],
     camposSolicitados: ["c-18", "c-21", "c-25"],
     status: "parcial",
+    visualizada: false,
     createdAt: "2025-01-15",
   },
   {
@@ -175,6 +179,7 @@ export const mockSolicitacoes: Solicitacao[] = [
     orgaosSelecionados: ["org-3"],
     camposSolicitados: ["c-11", "c-12", "c-13"],
     status: "aberta",
+    visualizada: false,
     createdAt: "2025-01-20",
   },
   {
@@ -186,6 +191,7 @@ export const mockSolicitacoes: Solicitacao[] = [
     orgaosSelecionados: ["org-1", "org-2", "org-3", "org-4", "org-5"],
     camposSolicitados: ["c-22", "c-26"],
     status: "fechada",
+    visualizada: false,
     createdAt: "2025-01-25",
   },
 ];

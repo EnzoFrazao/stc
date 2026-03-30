@@ -192,8 +192,9 @@ const SolicitacoesPage = () => {
                     <TableHead>Título</TableHead>
                     <TableHead>Criação</TableHead>
                     <TableHead>Prazo</TableHead>
-                    <TableHead>Status</TableHead>
-                    <TableHead>Ações</TableHead>
+                     <TableHead>Status</TableHead>
+                     <TableHead>Visualizada</TableHead>
+                     <TableHead>Ações</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -215,6 +216,14 @@ const SolicitacoesPage = () => {
                       <TableCell className="text-sm">D+{s.prazoDias}</TableCell>
                       <TableCell>
                         <Badge variant="outline" className={statusStyles[s.status]}>{statusLabel[s.status]}</Badge>
+                      </TableCell>
+                      <TableCell>
+                        <Badge variant="outline" className={s.visualizada
+                          ? "bg-status-enviada-bg text-status-enviada border-status-enviada/30"
+                          : "bg-status-nao-enviada-bg text-status-nao-enviada border-status-nao-enviada/30"
+                        }>
+                          {s.visualizada ? "Sim" : "Não"}
+                        </Badge>
                       </TableCell>
                       <TableCell>
                         <Button size="sm" variant="ghost" className="gap-1 text-secondary" onClick={() => setSelected(s)}>
