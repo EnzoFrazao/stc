@@ -156,6 +156,7 @@ export const mockSolicitacoes: Solicitacao[] = [
     orgaosSelecionados: ["org-4"],
     camposSolicitados: ["c-14", "c-15", "c-16"],
     status: "enviada",
+    visualizada: true,
     createdAt: "2025-01-10",
   },
   {
