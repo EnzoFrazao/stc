@@ -10,7 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
-import { Send, X, Building2, FileSpreadsheet, Bell } from "lucide-react";
+import { Send, X, Building2, FileSpreadsheet, Bell, ChevronDown, ChevronRight } from "lucide-react";
 import AppHeader from "@/components/AppHeader";
 import { orgaos, camposPlanilha, CampoPlanilha, CanalNotificacao } from "@/data/mockData";
 
