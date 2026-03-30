@@ -179,6 +179,7 @@ export const mockSolicitacoes: Solicitacao[] = [
     orgaosSelecionados: ["org-3"],
     camposSolicitados: ["c-11", "c-12", "c-13"],
     status: "aberta",
+    visualizada: false,
     createdAt: "2025-01-20",
   },
   {
