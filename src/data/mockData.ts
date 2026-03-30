@@ -32,6 +32,7 @@ export interface Solicitacao {
   orgaosSelecionados: string[];
   camposSolicitados: string[];
   status: SolicitacaoStatus;
+  visualizada: boolean;
   createdAt: string;
 }
 
