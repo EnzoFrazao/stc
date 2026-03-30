@@ -2,7 +2,7 @@
 
 export type CanalNotificacao = "email" | "whatsapp" | "outro";
 export type TipoCampo = "texto" | "moeda" | "numero" | "data";
-export type SolicitacaoStatus = "aberta" | "parcial" | "concluida";
+export type SolicitacaoStatus = "enviada" | "aberta" | "parcial" | "nao_enviada" | "fechada";
 export type RespostaStatus = "pendente" | "enviado" | "em_validacao" | "concluido";
 export type ValidacaoStatus = "pendente" | "validado" | "recusado";
 export type OrigemResposta = "arquivo" | "preenchimento_manual" | "imagem";
