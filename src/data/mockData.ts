@@ -2,7 +2,7 @@
 
 export type CanalNotificacao = "email" | "whatsapp" | "outro";
 export type TipoCampo = "texto" | "moeda" | "numero" | "data";
-export type SolicitacaoStatus = "aberta" | "parcial" | "concluida";
+export type SolicitacaoStatus = "enviada" | "aberta" | "parcial" | "nao_enviada" | "fechada";
 export type RespostaStatus = "pendente" | "enviado" | "em_validacao" | "concluido";
 export type ValidacaoStatus = "pendente" | "validado" | "recusado";
 export type OrigemResposta = "arquivo" | "preenchimento_manual" | "imagem";
@@ -153,7 +153,7 @@ export const mockSolicitacoes: Solicitacao[] = [
     canalNotificacao: "whatsapp",
     orgaosSelecionados: ["org-4"],
     camposSolicitados: ["c-14", "c-15", "c-16"],
-    status: "concluida",
+    status: "enviada",
     createdAt: "2025-01-10",
   },
   {
@@ -185,7 +185,7 @@ export const mockSolicitacoes: Solicitacao[] = [
     canalNotificacao: "email",
     orgaosSelecionados: ["org-1", "org-2", "org-3", "org-4", "org-5"],
     camposSolicitados: ["c-22", "c-26"],
-    status: "aberta",
+    status: "fechada",
     createdAt: "2025-01-25",
   },
 ];
@@ -351,4 +351,29 @@ export function calcProgresso(resposta: RespostaOrgao): number {
   if (resposta.itens.length === 0) return 0;
   const done = resposta.itens.filter(i => i.validacaoStatus === "validado").length;
   return Math.round((done / resposta.itens.length) * 100);
+}
+
+export function calcularStatusSolicitacao(
+  sol: Solicitacao,
+  respostas: RespostaOrgao[]
+): SolicitacaoStatus {
+  const resps = respostas.filter(r => r.solicitacaoId === sol.id);
+  const totalItens = resps.reduce((acc, r) => acc + r.itens.length, 0);
+  const itensEnviados = resps.reduce(
+    (acc, r) => acc + r.itens.filter(i => !!i.valor && String(i.valor).trim() !== "").length,
+    0
+  );
+
+  const createdDate = new Date(sol.createdAt);
+  const prazoDate = new Date(createdDate);
+  prazoDate.setDate(prazoDate.getDate() + sol.prazoDias);
+  const now = new Date();
+  const dentroDosPrazos = now <= prazoDate;
+
+  if (totalItens === 0) return dentroDosPrazos ? "fechada" : "nao_enviada";
+
+  if (itensEnviados === totalItens) return "enviada";
+  if (itensEnviados === 0) return dentroDosPrazos ? "fechada" : "nao_enviada";
+  // partial
+  return dentroDosPrazos ? "aberta" : "parcial";
 }

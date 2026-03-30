@@ -28,6 +28,18 @@
     --radius: 0.75rem;
 
     /* Status colors */
+    --status-enviada: 142 71% 35%;
+    --status-enviada-bg: 142 71% 94%;
+    --status-aberta: 213 80% 45%;
+    --status-aberta-bg: 213 80% 94%;
+    --status-parcial: 45 93% 47%;
+    --status-parcial-bg: 45 93% 94%;
+    --status-nao-enviada: 0 72% 51%;
+    --status-nao-enviada-bg: 0 72% 94%;
+    --status-fechada: 270 60% 50%;
+    --status-fechada-bg: 270 60% 94%;
+
+    /* Legacy status aliases */
     --status-pending: 45 93% 47%;
     --status-pending-bg: 45 93% 94%;
     --status-progress: 213 80% 45%;
