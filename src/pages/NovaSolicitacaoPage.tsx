@@ -1,4 +1,5 @@
 import { useState, useMemo } from "react";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { useNavigate } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -9,7 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
-import { Send, X, Building2, FileSpreadsheet, Bell } from "lucide-react";
+import { Send, X, Building2, FileSpreadsheet, Bell, ChevronDown, ChevronRight } from "lucide-react";
 import AppHeader from "@/components/AppHeader";
 import { orgaos, camposPlanilha, CampoPlanilha, CanalNotificacao } from "@/data/mockData";
 
@@ -159,37 +160,49 @@ const NovaSolicitacaoPage = () => {
                   </CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-4">
-                  {Object.entries(camposPorOrgao).map(([orgaoNome, campos]) => (
-                    <div key={orgaoNome}>
-                      <h4 className="text-sm font-semibold text-primary mb-2">{orgaoNome}</h4>
-                      <div className="space-y-2">
-                        {campos.map(campo => {
-                          const checked = camposSelecionados.includes(campo.id);
-                          return (
-                            <button
-                              key={campo.id}
-                              type="button"
-                              onClick={() => toggleCampo(campo.id)}
-                              className={`w-full flex items-center justify-between rounded-lg border p-3 text-sm transition-all active:scale-[0.99] ${
-                                checked ? "border-secondary bg-secondary/5" : "border-border hover:border-secondary/30"
-                              }`}
-                            >
-                              <div className="flex items-center gap-3">
-                                <div className={`h-4 w-4 rounded border-2 flex items-center justify-center transition-colors ${
-                                  checked ? "bg-secondary border-secondary" : "border-muted-foreground/40"
-                                }`}>
-                                  {checked && <span className="text-white text-[10px] font-bold">✓</span>}
+                  {Object.entries(camposPorOrgao).map(([orgaoNome, campos]) => {
+                    const selecionadosDoOrgao = campos.filter(c => camposSelecionados.includes(c.id)).length;
+                    return (
+                      <Collapsible key={orgaoNome} defaultOpen>
+                        <CollapsibleTrigger className="w-full flex items-center justify-between rounded-lg bg-muted/50 px-4 py-3 text-sm font-semibold text-primary hover:bg-muted transition-colors">
+                          <div className="flex items-center gap-2">
+                            <ChevronDown className="h-4 w-4 transition-transform group-data-[state=closed]:hidden" />
+                            <span>{orgaoNome}</span>
+                            {selecionadosDoOrgao > 0 && (
+                              <Badge variant="secondary" className="text-[10px] ml-1">{selecionadosDoOrgao} selecionado(s)</Badge>
+                            )}
+                          </div>
+                          <span className="text-xs text-muted-foreground font-normal">{campos.length} campo(s)</span>
+                        </CollapsibleTrigger>
+                        <CollapsibleContent className="space-y-2 pt-2">
+                          {campos.map(campo => {
+                            const checked = camposSelecionados.includes(campo.id);
+                            return (
+                              <button
+                                key={campo.id}
+                                type="button"
+                                onClick={() => toggleCampo(campo.id)}
+                                className={`w-full flex items-center justify-between rounded-lg border p-3 text-sm transition-all active:scale-[0.99] ${
+                                  checked ? "border-secondary bg-secondary/5" : "border-border hover:border-secondary/30"
+                                }`}
+                              >
+                                <div className="flex items-center gap-3">
+                                  <div className={`h-4 w-4 rounded border-2 flex items-center justify-center transition-colors ${
+                                    checked ? "bg-secondary border-secondary" : "border-muted-foreground/40"
+                                  }`}>
+                                    {checked && <span className="text-white text-[10px] font-bold">✓</span>}
+                                  </div>
+                                  <span>{campo.label}</span>
+                                  {campo.categoria && <span className="text-xs text-muted-foreground">({campo.categoria})</span>}
                                 </div>
-                                <span>{campo.label}</span>
-                                {campo.categoria && <span className="text-xs text-muted-foreground">({campo.categoria})</span>}
-                              </div>
-                              <Badge className={`text-xs ${tipoBadgeColor[campo.tipo]}`}>{tipoLabel[campo.tipo]}</Badge>
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  ))}
+                                <Badge className={`text-xs ${tipoBadgeColor[campo.tipo]}`}>{tipoLabel[campo.tipo]}</Badge>
+                              </button>
+                            );
+                          })}
+                        </CollapsibleContent>
+                      </Collapsible>
+                    );
+                  })}
                   {orgaosSelecionados.length > 0 && camposDisponiveis.length === 0 && (
                     <p className="text-sm text-muted-foreground text-center py-4">Nenhum campo disponível para os órgãos selecionados.</p>
                   )}
