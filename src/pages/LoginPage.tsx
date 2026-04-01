@@ -18,7 +18,18 @@ const LoginPage = () => {
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (login(email, password)) {
-      navigate("/dashboard");
+      // Check stored user to determine role
+      const saved = sessionStorage.getItem("stc-user");
+      if (saved) {
+        const user = JSON.parse(saved);
+        if (user.role === "orgao") {
+          navigate("/orgao-dashboard");
+        } else {
+          navigate("/dashboard");
+        }
+      } else {
+        navigate("/dashboard");
+      }
     } else {
       toast({ title: "Erro", description: "Credenciais inválidas.", variant: "destructive" });
     }
