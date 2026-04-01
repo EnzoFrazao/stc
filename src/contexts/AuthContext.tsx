@@ -1,8 +1,12 @@
 import React, { createContext, useContext, useState, ReactNode } from "react";
 
+export type UserRole = "admin" | "orgao";
+
 interface User {
   email: string;
   name: string;
+  role: UserRole;
+  orgaoId?: string;
 }
 
 interface AuthContextType {
@@ -20,6 +24,15 @@ export const useAuth = () => {
   return ctx;
 };
 
+const USERS: { email: string; password: string; name: string; role: UserRole; orgaoId?: string }[] = [
+  { email: "admin@stc.ma.gov.br", password: "12345", name: "Administrador STC", role: "admin" },
+  { email: "saude@ma.gov.br", password: "12345", name: "Secretaria de Saúde", role: "orgao", orgaoId: "org-1" },
+  { email: "educacao@ma.gov.br", password: "12345", name: "Secretaria de Educação", role: "orgao", orgaoId: "org-2" },
+  { email: "seguranca@ma.gov.br", password: "12345", name: "Secretaria de Segurança", role: "orgao", orgaoId: "org-3" },
+  { email: "infraestrutura@ma.gov.br", password: "12345", name: "Secretaria de Infraestrutura", role: "orgao", orgaoId: "org-4" },
+  { email: "administracao@ma.gov.br", password: "12345", name: "Secretaria de Administração", role: "orgao", orgaoId: "org-5" },
+];
+
 export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const [user, setUser] = useState<User | null>(() => {
     const saved = sessionStorage.getItem("stc-user");
@@ -27,8 +40,9 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   });
 
   const login = (email: string, password: string) => {
-    if (email === "admin@stc.ma.gov.br" && password === "12345") {
-      const u = { email, name: "Administrador STC" };
+    const found = USERS.find(u => u.email === email && u.password === password);
+    if (found) {
+      const u: User = { email: found.email, name: found.name, role: found.role, orgaoId: found.orgaoId };
       setUser(u);
       sessionStorage.setItem("stc-user", JSON.stringify(u));
       return true;
