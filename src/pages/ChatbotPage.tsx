@@ -1,4 +1,6 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
+import { useParams, useNavigate } from "react-router-dom";
+import { useAuth } from "@/contexts/AuthContext";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -7,10 +9,10 @@ import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import {
-  mockChats, mockRespostas, ChatConversation, ChatMessage, RespostaItem,
+  mockChats, mockRespostas, mockSolicitacoes, ChatConversation, ChatMessage, RespostaItem,
   getCampoById, TipoCampo,
 } from "@/data/mockData";
-import { Send, Paperclip, Bot, User, CheckCircle, AlertCircle, Upload, PenLine, ImageIcon, AlertTriangle } from "lucide-react";
+import { Send, Paperclip, Bot, User, CheckCircle, AlertCircle, Upload, PenLine, ImageIcon, AlertTriangle, Calendar, Clock } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import AppHeader from "@/components/AppHeader";
 
@@ -23,9 +25,27 @@ const tipoPlaceholder: Record<TipoCampo, string> = {
 
 const ChatbotPage = () => {
   const { toast } = useToast();
+  const { solicitacaoId } = useParams<{ solicitacaoId?: string }>();
+  const { user } = useAuth();
+  const navigate = useNavigate();
+  const orgaoId = user?.orgaoId || "";
+
+  // Find the relevant chat based on solicitacaoId + orgaoId
+  const initialChat = useMemo(() => {
+    if (solicitacaoId && orgaoId) {
+      return mockChats.find(c => c.solicitacaoId === solicitacaoId && c.orgaoId === orgaoId) || mockChats[0];
+    }
+    return mockChats[0];
+  }, [solicitacaoId, orgaoId]);
+
+  const solicitacao = useMemo(() => {
+    const sid = solicitacaoId || initialChat?.solicitacaoId;
+    return mockSolicitacoes.find(s => s.id === sid);
+  }, [solicitacaoId, initialChat]);
+
   const [conversations, setConversations] = useState<ChatConversation[]>(mockChats);
   const [respostas, setRespostas] = useState(mockRespostas);
-  const [activeId, setActiveId] = useState(mockChats[0].id);
+  const [activeId, setActiveId] = useState(initialChat?.id || mockChats[0].id);
   const [input, setInput] = useState("");
 
   const [showFormModal, setShowFormModal] = useState(false);
@@ -138,28 +158,49 @@ const ChatbotPage = () => {
     return Math.round((done / resposta.itens.length) * 100);
   })() : 0;
 
+  const itensEnviados = resposta ? resposta.itens.filter(i => !!i.valor && String(i.valor).trim() !== "").length : 0;
+  const totalItens = resposta ? resposta.itens.length : 0;
+
+  // Calculate prazo
+  const prazoDate = solicitacao ? (() => {
+    const d = new Date(solicitacao.createdAt);
+    d.setDate(d.getDate() + solicitacao.prazoDias);
+    return d;
+  })() : null;
+  const diasRestantes = prazoDate ? Math.ceil((prazoDate.getTime() - new Date().getTime()) / (1000 * 60 * 60 * 24)) : 0;
+
+  const backTo = user?.role === "orgao" ? "/orgao-dashboard" : "/dashboard";
+
   return (
     <div className="min-h-screen bg-accent flex flex-col">
-      <AppHeader title="Assistente de Coleta de Dados" showBack />
+      <AppHeader title="Assistente de Coleta de Dados" showBack backTo={backTo} />
+
+      {/* Solicitation info bar */}
+      {solicitacao && (
+        <div className="bg-card border-b border-border">
+          <div className="container py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <div>
+              <h2 className="font-semibold text-card-foreground text-sm">{solicitacao.titulo}</h2>
+              <div className="flex items-center gap-4 text-xs text-muted-foreground mt-1">
+                <span className="flex items-center gap-1">
+                  <Calendar className="h-3 w-3" />
+                  Prazo: {prazoDate?.toLocaleDateString("pt-BR")}
+                </span>
+                <span className={`flex items-center gap-1 ${diasRestantes < 0 ? "text-destructive font-medium" : ""}`}>
+                  <Clock className="h-3 w-3" />
+                  {diasRestantes < 0 ? `${Math.abs(diasRestantes)} dia(s) atrasado` : `${diasRestantes} dia(s) restante(s)`}
+                </span>
+              </div>
+            </div>
+            <Badge variant="outline" className="text-xs shrink-0">
+              {itensEnviados}/{totalItens} itens enviados
+            </Badge>
+          </div>
+        </div>
+      )}
+
       <main className="flex-1 container py-6 flex flex-col lg:flex-row gap-6 min-h-0">
         <div className="flex-1 flex flex-col lg:w-[70%] min-h-0">
-          <div className="flex gap-2 mb-4 overflow-x-auto pb-2">
-            {conversations.map(c => (
-              <button
-                key={c.id}
-                onClick={() => setActiveId(c.id)}
-                className={`flex-shrink-0 rounded-lg px-4 py-2 text-left text-sm transition-all active:scale-[0.98] ${
-                  c.id === activeId
-                    ? "bg-secondary text-secondary-foreground shadow-md"
-                    : "bg-card hover:bg-muted border border-border"
-                }`}
-              >
-                <div className="font-medium">{c.protocolo}</div>
-                <div className="text-xs opacity-80">{c.orgaoNome}</div>
-              </button>
-            ))}
-          </div>
-
           <Card className="flex-1 border-0 shadow-lg flex flex-col min-h-0 overflow-hidden">
             <CardContent className="flex-1 overflow-y-auto p-4 space-y-3">
               {active.messages.map(msg => (
@@ -219,7 +260,7 @@ const ChatbotPage = () => {
               <div>
                 <div className="flex items-center justify-between mb-2">
                   <span className="text-sm font-medium">{currentProgresso}% concluído</span>
-                  <span className="text-xs text-muted-foreground">{active.protocolo}</span>
+                  <span className="text-xs text-muted-foreground">{itensEnviados}/{totalItens} itens</span>
                 </div>
                 <Progress value={currentProgresso} className="h-3" />
               </div>
@@ -310,7 +351,7 @@ const ChatbotPage = () => {
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setShowImageModal(false)}>Cancelar</Button>
-            <Button className="bg-status-completed hover:bg-status-completed/90 text-white gap-2" onClick={confirmExtractedData}>
+            <Button className="bg-status-completed hover:bg-status-completed/90 text-primary-foreground gap-2" onClick={confirmExtractedData}>
               <CheckCircle className="h-4 w-4" /> Confirmar Dados
             </Button>
           </DialogFooter>
