@@ -563,6 +563,8 @@ export const mockRespostas: RespostaOrgao[] = [
     ],
   },
 ];
+
+export const mockReenvios: ReenvioItem[] = [
   {
     id: "reenvio-1",
     solicitacaoOriginalId: "sol-3",
