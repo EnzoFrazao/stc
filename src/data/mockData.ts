@@ -117,6 +117,103 @@ export const orgaos: Orgao[] = [
   { id: "org-5", nome: "Secretaria de Administração", canaisNotificacao: ["email", "whatsapp", "outro"] },
 ];
 
+// ============ OBJETOS DE TRANSPARÊNCIA ============
+
+export const objetosTransparencia: ObjetoTransparencia[] = [
+  {
+    id: "obj-1",
+    codigo: "MT-0015",
+    nome: "TRABALHADOR TERCEIRIZADO",
+    ciclo: "Mensal — até o 10º dia útil do mês subsequente",
+    formato: "XLSX",
+    instrucao: "Enviar quando houver intermediação por contrato administrativo formal. Identificação da empresa e do contrato são obrigatórias. Vedado incluir CPF, endereço ou dados pessoais sensíveis do trabalhador.",
+    campos: [
+      { id: "mt15-1", nome: "nome_empresa", label: "Nome da Empresa", tipo: "texto" },
+      { id: "mt15-2", nome: "cnpj_empresa", label: "CNPJ da Empresa", tipo: "texto_cnpj" },
+      { id: "mt15-3", nome: "numero_contrato", label: "Número do Contrato", tipo: "texto" },
+      { id: "mt15-4", nome: "objeto_contrato", label: "Objeto do Contrato", tipo: "texto" },
+      { id: "mt15-5", nome: "nome_trabalhador", label: "Nome do Trabalhador", tipo: "texto" },
+      { id: "mt15-6", nome: "funcao", label: "Função", tipo: "texto" },
+      { id: "mt15-7", nome: "unidade_lotacao", label: "Unidade de Lotação", tipo: "texto" },
+      { id: "mt15-8", nome: "qtd_trabalhadores", label: "Quantidade de Trabalhadores", tipo: "numero_inteiro" },
+      { id: "mt15-9", nome: "valor_contratual_global", label: "Valor Contratual Global", tipo: "moeda" },
+      { id: "mt15-10", nome: "exercicio", label: "Exercício", tipo: "numero_ano" },
+      { id: "mt15-11", nome: "data_atualizacao", label: "Data de Atualização", tipo: "data" },
+      { id: "mt15-12", nome: "fonte_oficial", label: "Fonte Oficial", tipo: "texto" },
+    ],
+  },
+  {
+    id: "obj-2",
+    codigo: "MT-0016",
+    nome: "ESTAGIÁRIO",
+    ciclo: "Mensal — até o 10º dia útil do mês subsequente",
+    formato: "XLSX",
+    instrucao: "Enviar lista de estagiários com vínculo ativo no período de referência. Identificar o tipo de estágio (obrigatório / não obrigatório). Vedado incluir CPF, endereço ou dados pessoais sensíveis.",
+    campos: [
+      { id: "mt16-1", nome: "nome", label: "Nome", tipo: "texto" },
+      { id: "mt16-2", nome: "orgao", label: "Órgão", tipo: "texto" },
+      { id: "mt16-3", nome: "unidade", label: "Unidade", tipo: "texto" },
+      { id: "mt16-4", nome: "funcao", label: "Função", tipo: "texto" },
+      { id: "mt16-5", nome: "tipo_estagio", label: "Tipo de Estágio", tipo: "selecao", opcoes: ["Obrigatório", "Não Obrigatório"] },
+      { id: "mt16-6", nome: "instituicao_ensino", label: "Instituição de Ensino", tipo: "texto" },
+      { id: "mt16-7", nome: "periodo_inicio", label: "Período — Início", tipo: "data" },
+      { id: "mt16-8", nome: "periodo_termino", label: "Período — Término", tipo: "data" },
+      { id: "mt16-9", nome: "valor_bolsa", label: "Valor da Bolsa", tipo: "moeda" },
+      { id: "mt16-10", nome: "exercicio", label: "Exercício", tipo: "numero_ano" },
+      { id: "mt16-11", nome: "data_atualizacao", label: "Data de Atualização", tipo: "data" },
+      { id: "mt16-12", nome: "fonte_oficial", label: "Fonte Oficial", tipo: "texto" },
+    ],
+  },
+  {
+    id: "obj-3",
+    codigo: "MT-0040",
+    nome: "TABELA DE CARGOS E REMUNERAÇÃO",
+    ciclo: "Sob evento — envio imediato após publicação do ato",
+    formato: "VARIÁVEL",
+    instrucao: "Publicar a tabela vigente com embasamento legal. Atualizar sempre que houver alteração legal na estrutura de cargos ou de remuneração.",
+    campos: [
+      { id: "mt40-1", nome: "cargo_funcao", label: "Cargo / Função", tipo: "texto" },
+      { id: "mt40-2", nome: "nivel_referencia", label: "Nível / Referência", tipo: "texto" },
+      { id: "mt40-3", nome: "vencimento_base", label: "Valores de Vencimento Base", tipo: "moeda" },
+      { id: "mt40-4", nome: "gratificacoes", label: "Gratificações Previstas", tipo: "moeda" },
+      { id: "mt40-5", nome: "remuneracao_total", label: "Remuneração Total do Cargo", tipo: "moeda" },
+      { id: "mt40-6", nome: "base_legal", label: "Base Legal (lei ou decreto)", tipo: "texto" },
+      { id: "mt40-7", nome: "data_vigencia", label: "Data de Vigência", tipo: "data" },
+      { id: "mt40-8", nome: "data_atualizacao", label: "Data de Atualização", tipo: "data" },
+      { id: "mt40-9", nome: "fonte_oficial", label: "Fonte Oficial", tipo: "texto" },
+    ],
+  },
+  {
+    id: "obj-4",
+    codigo: "MT-0041",
+    nome: "CONCURSO PÚBLICO E PROCESSO SELETIVO",
+    ciclo: "Sob evento — envio imediato após cada ato publicado",
+    formato: "VARIÁVEL",
+    instrucao: "Incluir a íntegra dos editais e todos os atos subsequentes: gabarito, resultado preliminar, recurso, resultado final, lista de aprovados e nomeações. Incluir processos seletivos simplificados e de contratação temporária.",
+    campos: [
+      { id: "mt41-1", nome: "numero_edital", label: "Número do Edital", tipo: "texto" },
+      { id: "mt41-2", nome: "modalidade", label: "Modalidade", tipo: "selecao", opcoes: ["Concurso Público", "Processo Seletivo Simplificado"] },
+      { id: "mt41-3", nome: "cargo", label: "Cargo", tipo: "texto" },
+      { id: "mt41-4", nome: "qtd_vagas", label: "Quantidade de Vagas", tipo: "numero_inteiro" },
+      { id: "mt41-5", nome: "data_abertura", label: "Data de Abertura", tipo: "data" },
+      { id: "mt41-6", nome: "data_encerramento", label: "Data de Encerramento", tipo: "data" },
+      { id: "mt41-7", nome: "situacao", label: "Situação", tipo: "texto" },
+      { id: "mt41-8", nome: "documentos_vinculados", label: "Documentos Vinculados", tipo: "upload_multiplo" },
+      { id: "mt41-9", nome: "link_acesso", label: "Link de Acesso", tipo: "texto_url" },
+      { id: "mt41-10", nome: "data_atualizacao", label: "Data de Atualização", tipo: "data" },
+      { id: "mt41-11", nome: "fonte_oficial", label: "Fonte Oficial", tipo: "texto" },
+    ],
+  },
+];
+
+export function getObjetoById(id: string): ObjetoTransparencia | undefined {
+  return objetosTransparencia.find(o => o.id === id);
+}
+
+export function getObjetoByCodigo(codigo: string): ObjetoTransparencia | undefined {
+  return objetosTransparencia.find(o => o.codigo === codigo);
+}
+
 // ============ SPREADSHEET FIELDS ============
 
 export const camposPlanilha: CampoPlanilha[] = [
