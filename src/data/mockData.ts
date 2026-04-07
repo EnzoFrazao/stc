@@ -2,6 +2,7 @@
 
 export type CanalNotificacao = "email" | "whatsapp" | "outro";
 export type TipoCampo = "texto" | "moeda" | "numero" | "data";
+export type TipoCampoMetadado = "texto" | "texto_cnpj" | "numero_inteiro" | "numero_ano" | "moeda" | "data" | "selecao" | "upload_multiplo" | "texto_url";
 export type SolicitacaoStatus = "enviada" | "aberta" | "parcial" | "nao_enviada" | "fechada";
 export type RespostaStatus = "pendente" | "enviado" | "em_validacao" | "concluido";
 export type ValidacaoStatus = "pendente" | "validado" | "recusado";
@@ -12,6 +13,24 @@ export interface Orgao {
   id: string;
   nome: string;
   canaisNotificacao: CanalNotificacao[];
+}
+
+export interface MetadatoCampo {
+  id: string;
+  nome: string;
+  label: string;
+  tipo: TipoCampoMetadado;
+  opcoes?: string[];
+}
+
+export interface ObjetoTransparencia {
+  id: string;
+  codigo: string;
+  nome: string;
+  ciclo: string;
+  formato: "XLSX" | "VARIÁVEL";
+  instrucao: string;
+  campos: MetadatoCampo[];
 }
 
 export interface CampoPlanilha {
@@ -31,6 +50,8 @@ export interface Solicitacao {
   canalNotificacao: CanalNotificacao;
   orgaosSelecionados: string[];
   camposSolicitados: string[];
+  objetoId?: string;
+  camposObrigatorios?: string[];
   status: SolicitacaoStatus;
   visualizada: boolean;
   createdAt: string;
