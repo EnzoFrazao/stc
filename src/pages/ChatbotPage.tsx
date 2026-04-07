@@ -7,20 +7,27 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import {
   mockChats, mockRespostas, mockSolicitacoes, ChatConversation, ChatMessage, RespostaItem,
-  getCampoById, TipoCampo,
+  getCampoById, TipoCampo, getObjetoById, objetosTransparencia, MetadatoCampo, TipoCampoMetadado,
 } from "@/data/mockData";
-import { Send, Paperclip, Bot, User, CheckCircle, AlertCircle, Upload, PenLine, ImageIcon, AlertTriangle, Calendar, Clock } from "lucide-react";
+import { Send, Paperclip, Bot, User, CheckCircle, AlertCircle, Upload, PenLine, ImageIcon, AlertTriangle, Calendar, Clock, FileUp } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import AppHeader from "@/components/AppHeader";
 
-const tipoPlaceholder: Record<TipoCampo, string> = {
+const tipoPlaceholder: Record<string, string> = {
   texto: "Digite o texto...",
+  texto_cnpj: "XX.XXX.XXX/XXXX-XX",
   moeda: "R$ 0,00",
   numero: "0",
+  numero_inteiro: "0",
+  numero_ano: "2025",
   data: "DD/MM/AAAA",
+  selecao: "Selecione...",
+  upload_multiplo: "Selecione arquivos...",
+  texto_url: "https://...",
 };
 
 const ChatbotPage = () => {
