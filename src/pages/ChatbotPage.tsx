@@ -50,6 +50,16 @@ const ChatbotPage = () => {
     return mockSolicitacoes.find(s => s.id === sid);
   }, [solicitacaoId, initialChat]);
 
+  const objetoTransp = useMemo(() => {
+    if (solicitacao?.objetoId) return getObjetoById(solicitacao.objetoId);
+    return undefined;
+  }, [solicitacao]);
+
+  const getMetadatoCampo = (campoId: string): MetadatoCampo | undefined => {
+    if (!objetoTransp) return undefined;
+    return objetoTransp.campos.find(c => c.id === campoId);
+  };
+
   const [conversations, setConversations] = useState<ChatConversation[]>(mockChats);
   const [respostas, setRespostas] = useState(mockRespostas);
   const [activeId, setActiveId] = useState(initialChat?.id || mockChats[0].id);
