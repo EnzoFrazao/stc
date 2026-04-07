@@ -7,20 +7,27 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import {
   mockChats, mockRespostas, mockSolicitacoes, ChatConversation, ChatMessage, RespostaItem,
-  getCampoById, TipoCampo,
+  getCampoById, TipoCampo, getObjetoById, objetosTransparencia, MetadatoCampo, TipoCampoMetadado,
 } from "@/data/mockData";
-import { Send, Paperclip, Bot, User, CheckCircle, AlertCircle, Upload, PenLine, ImageIcon, AlertTriangle, Calendar, Clock } from "lucide-react";
+import { Send, Paperclip, Bot, User, CheckCircle, AlertCircle, Upload, PenLine, ImageIcon, AlertTriangle, Calendar, Clock, FileUp } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import AppHeader from "@/components/AppHeader";
 
-const tipoPlaceholder: Record<TipoCampo, string> = {
+const tipoPlaceholder: Record<string, string> = {
   texto: "Digite o texto...",
+  texto_cnpj: "XX.XXX.XXX/XXXX-XX",
   moeda: "R$ 0,00",
   numero: "0",
+  numero_inteiro: "0",
+  numero_ano: "2025",
   data: "DD/MM/AAAA",
+  selecao: "Selecione...",
+  upload_multiplo: "Selecione arquivos...",
+  texto_url: "https://...",
 };
 
 const ChatbotPage = () => {
@@ -42,6 +49,16 @@ const ChatbotPage = () => {
     const sid = solicitacaoId || initialChat?.solicitacaoId;
     return mockSolicitacoes.find(s => s.id === sid);
   }, [solicitacaoId, initialChat]);
+
+  const objetoTransp = useMemo(() => {
+    if (solicitacao?.objetoId) return getObjetoById(solicitacao.objetoId);
+    return undefined;
+  }, [solicitacao]);
+
+  const getMetadatoCampo = (campoId: string): MetadatoCampo | undefined => {
+    if (!objetoTransp) return undefined;
+    return objetoTransp.campos.find(c => c.id === campoId);
+  };
 
   const [conversations, setConversations] = useState<ChatConversation[]>(mockChats);
   const [respostas, setRespostas] = useState(mockRespostas);
@@ -295,22 +312,98 @@ const ChatbotPage = () => {
               <PenLine className="h-5 w-5" /> Preencher Dados
             </DialogTitle>
           </DialogHeader>
+          {objetoTransp && (objetoTransp.formato === "XLSX") && (
+            <div className="rounded-lg bg-status-aberta-bg/50 border border-status-aberta/20 p-3">
+              <p className="text-xs text-card-foreground">Este dado deve ser enviado em formato XLSX.</p>
+            </div>
+          )}
+          {objetoTransp && (
+            <div className="rounded-lg bg-muted/50 border border-border p-3">
+              <p className="text-xs text-muted-foreground">{objetoTransp.instrucao}</p>
+            </div>
+          )}
           <div className="space-y-4">
             {pendingItens.map(item => {
               const campo = getCampoById(item.campoId);
+              const meta = getMetadatoCampo(item.campoId);
+              const tipo = meta?.tipo || item.tipoValor;
+              const isObrigatorio = solicitacao?.camposObrigatorios?.includes(item.campoId);
+              const label = meta?.label || campo?.label || campo?.nome || item.campoId;
+
               return (
                 <div key={item.id} className="space-y-1.5">
                   <Label className="flex items-center gap-2">
-                    {campo?.label || campo?.nome || item.campoId}
-                    <Badge variant="outline" className="text-[10px]">{item.tipoValor}</Badge>
+                    {label}
+                    {isObrigatorio && <span className="text-destructive">*</span>}
+                    <Badge variant="outline" className="text-[10px]">{tipoPlaceholder[tipo] ? tipo : item.tipoValor}</Badge>
                   </Label>
-                  <Input
-                    type={item.tipoValor === "numero" ? "number" : item.tipoValor === "moeda" ? "number" : item.tipoValor === "data" ? "date" : "text"}
-                    step={item.tipoValor === "moeda" ? "0.01" : undefined}
-                    placeholder={tipoPlaceholder[item.tipoValor]}
-                    value={formValues[item.id] || ""}
-                    onChange={e => setFormValues(prev => ({ ...prev, [item.id]: e.target.value }))}
-                  />
+                  {tipo === "selecao" && meta?.opcoes ? (
+                    <Select value={formValues[item.id] || ""} onValueChange={v => setFormValues(prev => ({ ...prev, [item.id]: v }))}>
+                      <SelectTrigger><SelectValue placeholder="Selecione..." /></SelectTrigger>
+                      <SelectContent>
+                        {meta.opcoes.map(op => (
+                          <SelectItem key={op} value={op}>{op}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  ) : tipo === "upload_multiplo" ? (
+                    <div className="flex items-center gap-2">
+                      <Button type="button" variant="outline" className="gap-2 flex-1" onClick={() => {
+                        setFormValues(prev => ({ ...prev, [item.id]: "documentos_anexados.pdf" }));
+                        toast({ title: "Arquivo(s) selecionado(s)", description: "Simulação de upload realizada." });
+                      }}>
+                        <FileUp className="h-4 w-4" />
+                        {formValues[item.id] ? formValues[item.id] : "Selecionar arquivos"}
+                      </Button>
+                    </div>
+                  ) : tipo === "texto_cnpj" ? (
+                    <Input
+                      placeholder="XX.XXX.XXX/XXXX-XX"
+                      maxLength={18}
+                      value={formValues[item.id] || ""}
+                      onChange={e => {
+                        let v = e.target.value.replace(/\D/g, "").slice(0, 14);
+                        if (v.length > 12) v = v.replace(/^(\d{2})(\d{3})(\d{3})(\d{4})(\d{0,2})/, "$1.$2.$3/$4-$5");
+                        else if (v.length > 8) v = v.replace(/^(\d{2})(\d{3})(\d{3})(\d{0,4})/, "$1.$2.$3/$4");
+                        else if (v.length > 5) v = v.replace(/^(\d{2})(\d{3})(\d{0,3})/, "$1.$2.$3");
+                        else if (v.length > 2) v = v.replace(/^(\d{2})(\d{0,3})/, "$1.$2");
+                        setFormValues(prev => ({ ...prev, [item.id]: v }));
+                      }}
+                    />
+                  ) : tipo === "numero_ano" ? (
+                    <Input
+                      type="number"
+                      min={1900}
+                      max={2099}
+                      placeholder="2025"
+                      value={formValues[item.id] || ""}
+                      onChange={e => setFormValues(prev => ({ ...prev, [item.id]: e.target.value.slice(0, 4) }))}
+                    />
+                  ) : tipo === "numero_inteiro" ? (
+                    <Input
+                      type="number"
+                      min={0}
+                      step={1}
+                      placeholder="0"
+                      value={formValues[item.id] || ""}
+                      onChange={e => setFormValues(prev => ({ ...prev, [item.id]: e.target.value.replace(/[^0-9]/g, "") }))}
+                    />
+                  ) : tipo === "texto_url" ? (
+                    <Input
+                      type="url"
+                      placeholder="https://..."
+                      value={formValues[item.id] || ""}
+                      onChange={e => setFormValues(prev => ({ ...prev, [item.id]: e.target.value }))}
+                    />
+                  ) : (
+                    <Input
+                      type={tipo === "numero" ? "number" : tipo === "moeda" ? "number" : tipo === "data" ? "date" : "text"}
+                      step={tipo === "moeda" ? "0.01" : undefined}
+                      placeholder={tipoPlaceholder[tipo] || tipoPlaceholder[item.tipoValor] || ""}
+                      value={formValues[item.id] || ""}
+                      onChange={e => setFormValues(prev => ({ ...prev, [item.id]: e.target.value }))}
+                    />
+                  )}
                 </div>
               );
             })}

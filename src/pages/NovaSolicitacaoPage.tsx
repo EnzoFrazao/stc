@@ -1,5 +1,4 @@
 import { useState, useMemo } from "react";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { useNavigate } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -7,86 +6,70 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-
 import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/hooks/use-toast";
-import { Send, X, Building2, FileSpreadsheet, Bell, ChevronDown, ChevronRight } from "lucide-react";
+import { Send, FileSpreadsheet, Bell, CheckCircle2, FileText } from "lucide-react";
 import AppHeader from "@/components/AppHeader";
-import { orgaos, camposPlanilha, CampoPlanilha, CanalNotificacao } from "@/data/mockData";
+import { objetosTransparencia, ObjetoTransparencia, CanalNotificacao } from "@/data/mockData";
 
 const NovaSolicitacaoPage = () => {
   const navigate = useNavigate();
   const { toast } = useToast();
 
-  const [orgaosSelecionados, setOrgaosSelecionados] = useState<string[]>([]);
-  const [camposSelecionados, setCamposSelecionados] = useState<string[]>([]);
+  const [objetoSelecionado, setObjetoSelecionado] = useState<string | null>(null);
+  const [camposObrigatorios, setCamposObrigatorios] = useState<string[]>([]);
   const [prazo, setPrazo] = useState("");
   const [titulo, setTitulo] = useState("");
   const [observacoes, setObservacoes] = useState("");
   const [canal, setCanal] = useState<CanalNotificacao>("email");
 
-  const camposDisponiveis = useMemo(() => {
-    if (orgaosSelecionados.length === 0) return [];
-    return camposPlanilha.filter(c =>
-      c.orgaosPermitidos.some(oId => orgaosSelecionados.includes(oId))
-    );
-  }, [orgaosSelecionados]);
+  const objeto = useMemo(
+    () => objetosTransparencia.find(o => o.id === objetoSelecionado),
+    [objetoSelecionado]
+  );
 
-  const camposPorOrgao = useMemo(() => {
-    const map: Record<string, CampoPlanilha[]> = {};
-    for (const orgaoId of orgaosSelecionados) {
-      const orgao = orgaos.find(o => o.id === orgaoId);
-      if (!orgao) continue;
-      map[orgao.nome] = camposDisponiveis.filter(c => c.orgaosPermitidos.includes(orgaoId));
+  const handleSelectObjeto = (id: string) => {
+    setObjetoSelecionado(id);
+    const obj = objetosTransparencia.find(o => o.id === id);
+    if (obj) {
+      setCamposObrigatorios(obj.campos.map(c => c.id));
     }
-    return map;
-  }, [orgaosSelecionados, camposDisponiveis]);
-
-  const toggleOrgao = (orgaoId: string) => {
-    setOrgaosSelecionados(prev => {
-      const next = prev.includes(orgaoId)
-        ? prev.filter(id => id !== orgaoId)
-        : [...prev, orgaoId];
-      const novosDisponiveis = camposPlanilha
-        .filter(c => c.orgaosPermitidos.some(oId => next.includes(oId)))
-        .map(c => c.id);
-      setCamposSelecionados(prev => prev.filter(id => novosDisponiveis.includes(id)));
-      return next;
-    });
   };
 
-  const toggleCampo = (campoId: string) => {
-    setCamposSelecionados(prev =>
+  const toggleCampoObrigatorio = (campoId: string) => {
+    setCamposObrigatorios(prev =>
       prev.includes(campoId) ? prev.filter(id => id !== campoId) : [...prev, campoId]
     );
   };
 
-  const tipoLabel: Record<string, string> = {
+  const formatoBadgeClass: Record<string, string> = {
+    XLSX: "bg-status-enviada-bg text-status-enviada border-status-enviada/30",
+    VARIÁVEL: "bg-status-parcial-bg text-status-parcial border-status-parcial/30",
+  };
+
+  const tipoCampoLabel: Record<string, string> = {
     texto: "Texto",
+    texto_cnpj: "CNPJ",
+    numero_inteiro: "Nº Inteiro",
+    numero_ano: "Ano",
     moeda: "Monetário",
-    numero: "Numérico",
     data: "Data",
+    selecao: "Seleção",
+    upload_multiplo: "Upload",
+    texto_url: "URL",
   };
-
-  const tipoBadgeColor: Record<string, string> = {
-    texto: "bg-muted text-muted-foreground",
-    moeda: "bg-status-completed-bg text-status-completed",
-    numero: "bg-status-progress-bg text-status-progress",
-    data: "bg-status-pending-bg text-status-pending",
-  };
-
-  const prazoDiasMap: Record<string, number> = { "D+3": 3, "D+7": 7, "D+15": 15 };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (orgaosSelecionados.length === 0 || camposSelecionados.length === 0 || !prazo || !titulo) {
+    if (!objetoSelecionado || camposObrigatorios.length === 0 || !prazo || !titulo) {
       toast({ title: "Erro", description: "Preencha todos os campos obrigatórios.", variant: "destructive" });
       return;
     }
     const canalTexto = canal === "whatsapp" ? "WhatsApp" : canal === "email" ? "E-mail" : "Outro";
     toast({
       title: "Solicitação enviada!",
-      description: `Notificação enviada via ${canalTexto} para ${orgaosSelecionados.length} órgão(s).`,
+      description: `Objeto ${objeto?.codigo} — Notificação enviada via ${canalTexto}.`,
     });
     setTimeout(() => navigate("/solicitacoes"), 1200);
   };
@@ -98,119 +81,96 @@ const NovaSolicitacaoPage = () => {
         <form onSubmit={handleSubmit}>
           <div className="grid gap-6 lg:grid-cols-3">
             <div className="lg:col-span-2 space-y-6">
-              {/* Step 1: Select organs */}
+              {/* Step 1: Select transparency object */}
               <Card className="border-0 shadow-lg animate-fade-in">
                 <CardHeader className="pb-3">
                   <CardTitle className="text-primary flex items-center gap-2">
-                    <Building2 className="h-5 w-5" />
-                    1. Selecione os Órgãos *
+                    <FileText className="h-5 w-5" />
+                    1. Selecione o Objeto de Transparência *
                   </CardTitle>
                 </CardHeader>
                 <CardContent>
-                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                    {orgaos.map(orgao => {
-                      const selected = orgaosSelecionados.includes(orgao.id);
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    {objetosTransparencia.map(obj => {
+                      const selected = objetoSelecionado === obj.id;
                       return (
                         <button
-                          key={orgao.id}
+                          key={obj.id}
                           type="button"
-                          onClick={() => toggleOrgao(orgao.id)}
+                          onClick={() => handleSelectObjeto(obj.id)}
                           className={`rounded-lg border-2 p-4 text-left text-sm transition-all active:scale-[0.98] ${
                             selected
                               ? "border-secondary bg-secondary/10 shadow-md"
                               : "border-border bg-card hover:border-secondary/40 hover:shadow-sm"
                           }`}
                         >
-                          <div className="flex items-center gap-2">
-                            <div className={`h-4 w-4 rounded border-2 flex items-center justify-center transition-colors ${
-                              selected ? "bg-secondary border-secondary" : "border-muted-foreground/40"
-                            }`}>
-                              {selected && <span className="text-white text-[10px] font-bold">✓</span>}
+                          <div className="flex items-center justify-between mb-2">
+                            <div className="flex items-center gap-2">
+                              <div className={`h-4 w-4 rounded-full border-2 flex items-center justify-center transition-colors ${
+                                selected ? "bg-secondary border-secondary" : "border-muted-foreground/40"
+                              }`}>
+                                {selected && <span className="text-secondary-foreground text-[10px] font-bold">✓</span>}
+                              </div>
+                              <span className="font-mono text-xs text-muted-foreground">{obj.codigo}</span>
                             </div>
-                            <span className="font-medium">{orgao.nome}</span>
+                            <Badge variant="outline" className={`text-[10px] ${formatoBadgeClass[obj.formato]}`}>
+                              {obj.formato}
+                            </Badge>
                           </div>
+                          <p className="font-semibold text-card-foreground">{obj.nome}</p>
+                          <p className="text-xs text-muted-foreground mt-1">{obj.ciclo}</p>
                         </button>
                       );
                     })}
                   </div>
-                  {orgaosSelecionados.length > 0 && (
-                    <div className="flex flex-wrap gap-2 mt-4">
-                      {orgaosSelecionados.map(id => {
-                        const o = orgaos.find(o => o.id === id)!;
-                        return (
-                          <Badge key={id} variant="secondary" className="gap-1 pr-1">
-                            {o.nome}
-                            <button type="button" onClick={() => toggleOrgao(id)} className="ml-1 rounded-full hover:bg-secondary/20 p-0.5">
-                              <X className="h-3 w-3" />
-                            </button>
-                          </Badge>
-                        );
-                      })}
-                    </div>
-                  )}
                 </CardContent>
               </Card>
 
-              {/* Step 2: Select fields */}
-              <Card className={`border-0 shadow-lg transition-opacity ${orgaosSelecionados.length === 0 ? "opacity-50 pointer-events-none" : "animate-fade-in"}`}>
+              {/* Step 2: Fields checklist */}
+              <Card className={`border-0 shadow-lg transition-opacity ${!objeto ? "opacity-50 pointer-events-none" : "animate-fade-in"}`}>
                 <CardHeader className="pb-3">
                   <CardTitle className="text-primary flex items-center gap-2">
                     <FileSpreadsheet className="h-5 w-5" />
-                    2. Selecione os Dados da Planilha *
+                    2. Campos Obrigatórios da Solicitação *
                   </CardTitle>
+                  {objeto && (
+                    <p className="text-xs text-muted-foreground mt-1">
+                      Marque os campos que serão obrigatórios nesta solicitação. Todos vêm selecionados por padrão.
+                    </p>
+                  )}
                 </CardHeader>
-                <CardContent className="space-y-4">
-                  {Object.entries(camposPorOrgao).map(([orgaoNome, campos]) => {
-                    const selecionadosDoOrgao = campos.filter(c => camposSelecionados.includes(c.id)).length;
+                <CardContent className="space-y-2">
+                  {objeto && (
+                    <div className="rounded-lg bg-status-aberta-bg/50 border border-status-aberta/20 p-3 mb-3">
+                      <p className="text-xs text-card-foreground">{objeto.instrucao}</p>
+                    </div>
+                  )}
+                  {objeto?.campos.map(campo => {
+                    const checked = camposObrigatorios.includes(campo.id);
                     return (
-                      <Collapsible key={orgaoNome} defaultOpen>
-                        <CollapsibleTrigger className="w-full flex items-center justify-between rounded-lg bg-muted/50 px-4 py-3 text-sm font-semibold text-primary hover:bg-muted transition-colors">
-                          <div className="flex items-center gap-2">
-                            <ChevronDown className="h-4 w-4 transition-transform group-data-[state=closed]:hidden" />
-                            <span>{orgaoNome}</span>
-                            {selecionadosDoOrgao > 0 && (
-                              <Badge variant="secondary" className="text-[10px] ml-1">{selecionadosDoOrgao} selecionado(s)</Badge>
-                            )}
-                          </div>
-                          <span className="text-xs text-muted-foreground font-normal">{campos.length} campo(s)</span>
-                        </CollapsibleTrigger>
-                        <CollapsibleContent className="space-y-2 pt-2">
-                          {campos.map(campo => {
-                            const checked = camposSelecionados.includes(campo.id);
-                            return (
-                              <button
-                                key={campo.id}
-                                type="button"
-                                onClick={() => toggleCampo(campo.id)}
-                                className={`w-full flex items-center justify-between rounded-lg border p-3 text-sm transition-all active:scale-[0.99] ${
-                                  checked ? "border-secondary bg-secondary/5" : "border-border hover:border-secondary/30"
-                                }`}
-                              >
-                                <div className="flex items-center gap-3">
-                                  <div className={`h-4 w-4 rounded border-2 flex items-center justify-center transition-colors ${
-                                    checked ? "bg-secondary border-secondary" : "border-muted-foreground/40"
-                                  }`}>
-                                    {checked && <span className="text-white text-[10px] font-bold">✓</span>}
-                                  </div>
-                                  <span>{campo.label}</span>
-                                  {campo.categoria && <span className="text-xs text-muted-foreground">({campo.categoria})</span>}
-                                </div>
-                                <Badge className={`text-xs ${tipoBadgeColor[campo.tipo]}`}>{tipoLabel[campo.tipo]}</Badge>
-                              </button>
-                            );
-                          })}
-                        </CollapsibleContent>
-                      </Collapsible>
+                      <button
+                        key={campo.id}
+                        type="button"
+                        onClick={() => toggleCampoObrigatorio(campo.id)}
+                        className={`w-full flex items-center justify-between rounded-lg border p-3 text-sm transition-all active:scale-[0.99] ${
+                          checked ? "border-secondary bg-secondary/5" : "border-border hover:border-secondary/30"
+                        }`}
+                      >
+                        <div className="flex items-center gap-3">
+                          <Checkbox checked={checked} className="pointer-events-none" />
+                          <span>{campo.label}</span>
+                        </div>
+                        <Badge variant="outline" className="text-[10px]">
+                          {tipoCampoLabel[campo.tipo] || campo.tipo}
+                        </Badge>
+                      </button>
                     );
                   })}
-                  {orgaosSelecionados.length > 0 && camposDisponiveis.length === 0 && (
-                    <p className="text-sm text-muted-foreground text-center py-4">Nenhum campo disponível para os órgãos selecionados.</p>
-                  )}
                 </CardContent>
               </Card>
 
               {/* Step 3: Details */}
-              <Card className={`border-0 shadow-lg transition-opacity ${camposSelecionados.length === 0 ? "opacity-50 pointer-events-none" : "animate-fade-in"}`}>
+              <Card className={`border-0 shadow-lg transition-opacity ${camposObrigatorios.length === 0 ? "opacity-50 pointer-events-none" : "animate-fade-in"}`}>
                 <CardHeader className="pb-3">
                   <CardTitle className="text-primary flex items-center gap-2">
                     <Bell className="h-5 w-5" />
@@ -266,24 +226,35 @@ const NovaSolicitacaoPage = () => {
                 </CardHeader>
                 <CardContent className="space-y-4 text-sm">
                   <div>
-                    <span className="font-medium text-muted-foreground">Órgãos selecionados</span>
-                    <p className="font-semibold text-primary">{orgaosSelecionados.length}</p>
+                    <span className="font-medium text-muted-foreground">Objeto</span>
+                    {objeto ? (
+                      <div className="mt-1">
+                        <p className="font-semibold text-primary">{objeto.codigo}</p>
+                        <p className="text-xs text-muted-foreground">{objeto.nome}</p>
+                      </div>
+                    ) : (
+                      <p className="text-muted-foreground/60 italic">Nenhum selecionado</p>
+                    )}
                   </div>
                   <div>
-                    <span className="font-medium text-muted-foreground">Campos selecionados</span>
-                    <p className="font-semibold text-primary">{camposSelecionados.length}</p>
+                    <span className="font-medium text-muted-foreground">Campos obrigatórios</span>
+                    <p className="font-semibold text-primary">
+                      {camposObrigatorios.length}{objeto ? ` / ${objeto.campos.length}` : ""}
+                    </p>
                   </div>
-                  {camposSelecionados.length > 0 && (
+                  {objeto && camposObrigatorios.length > 0 && (
                     <div className="space-y-1.5 max-h-64 overflow-y-auto">
-                      {camposSelecionados.map(id => {
-                        const campo = camposPlanilha.find(c => c.id === id)!;
-                        return (
-                          <div key={id} className="flex items-center justify-between rounded-md bg-muted px-3 py-2">
-                            <span className="truncate mr-2">{campo.label}</span>
-                            <Badge className={`text-[10px] shrink-0 ${tipoBadgeColor[campo.tipo]}`}>{tipoLabel[campo.tipo]}</Badge>
-                          </div>
-                        );
-                      })}
+                      {objeto.campos.filter(c => camposObrigatorios.includes(c.id)).map(campo => (
+                        <div key={campo.id} className="flex items-center justify-between rounded-md bg-muted px-3 py-2">
+                          <span className="truncate mr-2 flex items-center gap-1.5">
+                            <CheckCircle2 className="h-3 w-3 text-secondary shrink-0" />
+                            {campo.label}
+                          </span>
+                          <Badge variant="outline" className="text-[10px] shrink-0">
+                            {tipoCampoLabel[campo.tipo] || campo.tipo}
+                          </Badge>
+                        </div>
+                      ))}
                     </div>
                   )}
                   {prazo && (
@@ -292,6 +263,10 @@ const NovaSolicitacaoPage = () => {
                       <p className="font-semibold text-primary">{prazo}</p>
                     </div>
                   )}
+                  <div>
+                    <span className="font-medium text-muted-foreground">Formato esperado</span>
+                    <p className="font-semibold text-primary">{objeto?.formato || "—"}</p>
+                  </div>
                   <div>
                     <span className="font-medium text-muted-foreground">Canal de notificação</span>
                     <p className="font-semibold text-primary">
