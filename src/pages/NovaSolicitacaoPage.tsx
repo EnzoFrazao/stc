@@ -7,7 +7,6 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
-import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { Send, FileSpreadsheet, Bell, CheckCircle2, FileText } from "lucide-react";
 import AppHeader from "@/components/AppHeader";
@@ -157,7 +156,11 @@ const NovaSolicitacaoPage = () => {
                         }`}
                       >
                         <div className="flex items-center gap-3">
-                          <Checkbox checked={checked} className="pointer-events-none" />
+                          <div className={`h-4 w-4 rounded border-2 flex items-center justify-center transition-colors ${
+                            checked ? "bg-secondary border-secondary" : "border-muted-foreground/40"
+                          }`}>
+                            {checked && <span className="text-secondary-foreground text-[10px] font-bold">✓</span>}
+                          </div>
                           <span>{campo.label}</span>
                         </div>
                         <Badge variant="outline" className="text-[10px]">
