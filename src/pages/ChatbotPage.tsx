@@ -1,21 +1,22 @@
 import { useState, useMemo } from "react";
-import { useParams, useNavigate } from "react-router-dom";
+import { useParams } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
-import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import {
-  mockChats, mockRespostas, mockSolicitacoes, ChatConversation, ChatMessage, RespostaItem,
-  getCampoById, TipoCampo, getObjetoById, objetosTransparencia, MetadatoCampo, TipoCampoMetadado,
+  mockChats, mockRespostas, mockSolicitacoes, ChatMessage, RespostaItem,
+  getCampoById, getObjetoById, MetadatoCampo,
 } from "@/data/mockData";
-import { Send, Paperclip, Bot, User, CheckCircle, AlertCircle, Upload, PenLine, ImageIcon, AlertTriangle, Calendar, Clock, FileUp } from "lucide-react";
+import { Send, Paperclip, Bot, User, CheckCircle, ImageIcon, AlertTriangle, Calendar, Clock, Upload, PenLine, FileUp } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import AppHeader from "@/components/AppHeader";
+import FileSourceModal from "@/components/chatbot/FileSourceModal";
+import ComplianceSidebar from "@/components/chatbot/ComplianceSidebar";
 
 const tipoPlaceholder: Record<string, string> = {
   texto: "Digite o texto...",
@@ -34,10 +35,8 @@ const ChatbotPage = () => {
   const { toast } = useToast();
   const { solicitacaoId } = useParams<{ solicitacaoId?: string }>();
   const { user } = useAuth();
-  const navigate = useNavigate();
   const orgaoId = user?.orgaoId || "";
 
-  // Find the relevant chat based on solicitacaoId + orgaoId
   const initialChat = useMemo(() => {
     if (solicitacaoId && orgaoId) {
       return mockChats.find(c => c.solicitacaoId === solicitacaoId && c.orgaoId === orgaoId) || mockChats[0];
@@ -60,16 +59,20 @@ const ChatbotPage = () => {
     return objetoTransp.campos.find(c => c.id === campoId);
   };
 
-  const [conversations, setConversations] = useState<ChatConversation[]>(mockChats);
+  const [conversations, setConversations] = useState(mockChats);
   const [respostas, setRespostas] = useState(mockRespostas);
-  const [activeId, setActiveId] = useState(initialChat?.id || mockChats[0].id);
+  const [activeId] = useState(initialChat?.id || mockChats[0].id);
   const [input, setInput] = useState("");
 
   const [showFormModal, setShowFormModal] = useState(false);
   const [showImageModal, setShowImageModal] = useState(false);
   const [showBadImageModal, setShowBadImageModal] = useState(false);
+  const [showFileSourceModal, setShowFileSourceModal] = useState(false);
   const [formValues, setFormValues] = useState<Record<string, string>>({});
   const [extractedData, setExtractedData] = useState<Record<string, string>>({});
+
+  // Track whether upload is general or item-specific
+  const [uploadTargetItem, setUploadTargetItem] = useState<RespostaItem | null>(null);
 
   const active = conversations.find(c => c.id === activeId)!;
   const resposta = respostas.find(r => r.id === active.respostaOrgaoId);
@@ -95,6 +98,82 @@ const ChatbotPage = () => {
     setInput("");
   };
 
+  // ---- General upload (from chatbot button) ----
+  const handleGeneralUpload = () => {
+    setUploadTargetItem(null);
+    const time = new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+    const infoMsg: ChatMessage = {
+      id: `m-${Date.now()}`,
+      sender: "bot",
+      text: "Você pode enviar um arquivo completo para que o sistema analise o documento como um todo e identifique automaticamente quais informações do checklist podem ser preenchidas. Não é necessário anexar um arquivo separado para cada campo. Se preferir complementar apenas um dado específico, utilize o botão de envio individual ao lado do item correspondente na área de status.",
+      time,
+    };
+    addMessage([infoMsg]);
+    setShowFileSourceModal(true);
+  };
+
+  // ---- Individual upload (from sidebar item button) ----
+  const handleItemUpload = (item: RespostaItem) => {
+    setUploadTargetItem(item);
+    setShowFileSourceModal(true);
+  };
+
+  // ---- After user picks a file source ----
+  const handleFileSourceSelected = (_source: "camera" | "gallery" | "file" | "document") => {
+    // Simulate processing
+    const isBadQuality = Math.random() > 0.6;
+    if (isBadQuality) {
+      setShowBadImageModal(true);
+    } else {
+      processExtraction();
+    }
+  };
+
+  const processExtraction = () => {
+    const extracted: Record<string, string> = {};
+    const targetItems = uploadTargetItem ? [uploadTargetItem] : pendingItens;
+
+    targetItems.forEach(i => {
+      if (i.tipoValor === "moeda") extracted[i.id] = "R$ " + (Math.floor(Math.random() * 90000) + 1000).toLocaleString("pt-BR");
+      else if (i.tipoValor === "numero") extracted[i.id] = String(Math.floor(Math.random() * 9000) + 100);
+      else if (i.tipoValor === "data") extracted[i.id] = "15/03/2025";
+      else extracted[i.id] = "Dado extraído automaticamente";
+    });
+    setExtractedData(extracted);
+    setShowImageModal(true);
+  };
+
+  const confirmExtractedData = () => {
+    const time = new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+    setRespostas(prev => prev.map(r => {
+      if (r.id !== active.respostaOrgaoId) return r;
+      return {
+        ...r,
+        itens: r.itens.map(i => extractedData[i.id] ? { ...i, valor: extractedData[i.id], origem: "imagem" as const } : i),
+        status: "enviado" as const,
+        updatedAt: new Date().toISOString().split("T")[0],
+      };
+    }));
+
+    const targetLabel = uploadTargetItem
+      ? getCampoById(uploadTargetItem.campoId)?.label || uploadTargetItem.campoId
+      : null;
+
+    const botMsg: ChatMessage = {
+      id: `m-${Date.now()}`,
+      sender: "bot",
+      text: targetLabel
+        ? `Dados extraídos do arquivo foram confirmados e registrados para o campo "${targetLabel}".`
+        : "Dados extraídos do arquivo foram confirmados e registrados para os itens identificados.",
+      time,
+    };
+    addMessage([botMsg]);
+    setShowImageModal(false);
+    setUploadTargetItem(null);
+    toast({ title: "Dados confirmados!", description: "Os dados extraídos foram registrados." });
+  };
+
+  // ---- Form modal ----
   const openFormModal = () => {
     const vals: Record<string, string> = {};
     pendingItens.forEach(i => { vals[i.id] = ""; });
@@ -131,45 +210,6 @@ const ChatbotPage = () => {
     toast({ title: "Dados enviados!", description: "Seus dados foram registrados com sucesso." });
   };
 
-  const handleFileUpload = () => {
-    const isBadQuality = Math.random() > 0.5;
-    if (isBadQuality) {
-      setShowBadImageModal(true);
-    } else {
-      const extracted: Record<string, string> = {};
-      pendingItens.forEach(i => {
-        if (i.tipoValor === "moeda") extracted[i.id] = "R$ " + (Math.floor(Math.random() * 90000) + 1000).toLocaleString("pt-BR");
-        else if (i.tipoValor === "numero") extracted[i.id] = String(Math.floor(Math.random() * 9000) + 100);
-        else if (i.tipoValor === "data") extracted[i.id] = "15/03/2025";
-        else extracted[i.id] = "Dado extraído automaticamente";
-      });
-      setExtractedData(extracted);
-      setShowImageModal(true);
-    }
-  };
-
-  const confirmExtractedData = () => {
-    const time = new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
-    setRespostas(prev => prev.map(r => {
-      if (r.id !== active.respostaOrgaoId) return r;
-      return {
-        ...r,
-        itens: r.itens.map(i => extractedData[i.id] ? { ...i, valor: extractedData[i.id], origem: "imagem" as const } : i),
-        status: "enviado" as const,
-        updatedAt: new Date().toISOString().split("T")[0],
-      };
-    }));
-    const botMsg: ChatMessage = {
-      id: `m-${Date.now()}`,
-      sender: "bot",
-      text: "Dados extraídos da imagem foram confirmados e registrados.",
-      time,
-    };
-    addMessage([botMsg]);
-    setShowImageModal(false);
-    toast({ title: "Dados confirmados!", description: "Os dados extraídos da imagem foram registrados." });
-  };
-
   const currentProgresso = resposta ? (() => {
     const done = resposta.itens.filter(i => !!i.valor || i.validacaoStatus === "validado").length;
     return Math.round((done / resposta.itens.length) * 100);
@@ -178,7 +218,6 @@ const ChatbotPage = () => {
   const itensEnviados = resposta ? resposta.itens.filter(i => !!i.valor && String(i.valor).trim() !== "").length : 0;
   const totalItens = resposta ? resposta.itens.length : 0;
 
-  // Calculate prazo
   const prazoDate = solicitacao ? (() => {
     const d = new Date(solicitacao.createdAt);
     d.setDate(d.getDate() + solicitacao.prazoDias);
@@ -188,11 +227,14 @@ const ChatbotPage = () => {
 
   const backTo = user?.role === "orgao" ? "/orgao-dashboard" : "/dashboard";
 
+  const targetItemLabel = uploadTargetItem
+    ? getCampoById(uploadTargetItem.campoId)?.label || getCampoById(uploadTargetItem.campoId)?.nome || uploadTargetItem.campoId
+    : undefined;
+
   return (
     <div className="min-h-screen bg-accent flex flex-col">
       <AppHeader title="Assistente de Coleta de Dados" showBack backTo={backTo} />
 
-      {/* Solicitation info bar */}
       {solicitacao && (
         <div className="bg-card border-b border-border">
           <div className="container py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
@@ -217,6 +259,7 @@ const ChatbotPage = () => {
       )}
 
       <main className="flex-1 container py-6 flex flex-col lg:flex-row gap-6 min-h-0">
+        {/* Chat area */}
         <div className="flex-1 flex flex-col lg:w-[70%] min-h-0">
           <Card className="flex-1 border-0 shadow-lg flex flex-col min-h-0 overflow-hidden">
             <CardContent className="flex-1 overflow-y-auto p-4 space-y-3">
@@ -243,7 +286,7 @@ const ChatbotPage = () => {
 
             {pendingItens.length > 0 && (
               <div className="border-t px-4 py-3 flex gap-3">
-                <Button className="flex-1 bg-secondary hover:bg-secondary/90 gap-2" onClick={handleFileUpload}>
+                <Button className="flex-1 bg-secondary hover:bg-secondary/90 gap-2" onClick={handleGeneralUpload}>
                   <Upload className="h-4 w-4" /> Enviar Arquivo
                 </Button>
                 <Button className="flex-1 gap-2" variant="outline" onClick={openFormModal}>
@@ -268,41 +311,27 @@ const ChatbotPage = () => {
           </Card>
         </div>
 
+        {/* Compliance sidebar */}
         <div className="lg:w-[30%]">
-          <Card className="border-0 shadow-lg animate-slide-up sticky top-24">
-            <CardHeader className="pb-3">
-              <CardTitle className="text-primary text-base">Status de Conformidade</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div>
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-sm font-medium">{currentProgresso}% concluído</span>
-                  <span className="text-xs text-muted-foreground">{itensEnviados}/{totalItens} itens</span>
-                </div>
-                <Progress value={currentProgresso} className="h-3" />
-              </div>
-              <div className="space-y-2">
-                {resposta?.itens.map(item => {
-                  const campo = getCampoById(item.campoId);
-                  return (
-                    <div key={item.id} className={`flex items-center justify-between rounded-lg p-3 text-sm ${
-                      item.valor ? "bg-status-completed-bg" : "bg-status-pending-bg"
-                    }`}>
-                      <span className="flex items-center gap-2">
-                        {item.valor
-                          ? <CheckCircle className="h-4 w-4 text-status-completed" />
-                          : <AlertCircle className="h-4 w-4 text-status-pending" />
-                        }
-                        <span className="truncate">{campo?.label || campo?.nome || item.campoId}</span>
-                      </span>
-                    </div>
-                  );
-                })}
-              </div>
-            </CardContent>
-          </Card>
+          {resposta && (
+            <ComplianceSidebar
+              itens={resposta.itens}
+              currentProgresso={currentProgresso}
+              itensEnviados={itensEnviados}
+              totalItens={totalItens}
+              onItemUpload={handleItemUpload}
+            />
+          )}
         </div>
       </main>
+
+      {/* File Source Picker Modal */}
+      <FileSourceModal
+        open={showFileSourceModal}
+        onOpenChange={setShowFileSourceModal}
+        onSelectSource={handleFileSourceSelected}
+        targetItemLabel={targetItemLabel}
+      />
 
       {/* Dynamic Form Modal */}
       <Dialog open={showFormModal} onOpenChange={setShowFormModal}>
@@ -312,7 +341,7 @@ const ChatbotPage = () => {
               <PenLine className="h-5 w-5" /> Preencher Dados
             </DialogTitle>
           </DialogHeader>
-          {objetoTransp && (objetoTransp.formato === "XLSX") && (
+          {objetoTransp && objetoTransp.formato === "XLSX" && (
             <div className="rounded-lg bg-status-aberta-bg/50 border border-status-aberta/20 p-3">
               <p className="text-xs text-card-foreground">Este dado deve ser enviado em formato XLSX.</p>
             </div>
@@ -422,14 +451,17 @@ const ChatbotPage = () => {
         <DialogContent className="max-w-lg max-h-[80vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle className="text-primary flex items-center gap-2">
-              <ImageIcon className="h-5 w-5" /> Dados Extraídos da Imagem
+              <ImageIcon className="h-5 w-5" /> Dados Extraídos do Arquivo
             </DialogTitle>
           </DialogHeader>
           <p className="text-sm text-muted-foreground mb-4">
-            Revise os dados extraídos automaticamente. Edite se necessário antes de confirmar.
+            {uploadTargetItem
+              ? `Revise o dado extraído para o campo "${targetItemLabel}". Edite se necessário.`
+              : "Revise os dados extraídos automaticamente. O sistema analisou o arquivo como um todo para identificar os dados do checklist. Edite se necessário antes de confirmar."
+            }
           </p>
           <div className="space-y-4">
-            {pendingItens.map(item => {
+            {(uploadTargetItem ? [uploadTargetItem] : pendingItens).map(item => {
               const campo = getCampoById(item.campoId);
               return (
                 <div key={item.id} className="space-y-1.5">
@@ -443,7 +475,7 @@ const ChatbotPage = () => {
             })}
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setShowImageModal(false)}>Cancelar</Button>
+            <Button variant="outline" onClick={() => { setShowImageModal(false); setUploadTargetItem(null); }}>Cancelar</Button>
             <Button className="bg-status-completed hover:bg-status-completed/90 text-primary-foreground gap-2" onClick={confirmExtractedData}>
               <CheckCircle className="h-4 w-4" /> Confirmar Dados
             </Button>
@@ -465,23 +497,16 @@ const ChatbotPage = () => {
           <div className="flex gap-3 mt-4">
             <Button className="flex-1 gap-2" variant="outline" onClick={() => {
               setShowBadImageModal(false);
-              const extracted: Record<string, string> = {};
-              pendingItens.forEach(i => {
-                if (i.tipoValor === "moeda") extracted[i.id] = "R$ " + (Math.floor(Math.random() * 90000) + 1000).toLocaleString("pt-BR");
-                else if (i.tipoValor === "numero") extracted[i.id] = String(Math.floor(Math.random() * 9000) + 100);
-                else if (i.tipoValor === "data") extracted[i.id] = "15/03/2025";
-                else extracted[i.id] = "Dado extraído";
-              });
-              setExtractedData(extracted);
-              setShowImageModal(true);
+              processExtraction();
             }}>
-              <Upload className="h-4 w-4" /> Enviar outra foto
+              <Upload className="h-4 w-4" /> Enviar outro arquivo
             </Button>
             <Button className="flex-1 gap-2" onClick={() => {
               setShowBadImageModal(false);
+              setUploadTargetItem(null);
               openFormModal();
             }}>
-              <PenLine className="h-4 w-4" /> Preencher tabela
+              <PenLine className="h-4 w-4" /> Preencher manualmente
             </Button>
           </div>
         </DialogContent>
