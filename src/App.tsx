@@ -10,6 +10,7 @@ import DashboardPage from "@/pages/DashboardPage";
 import OrgaoDashboardPage from "@/pages/OrgaoDashboardPage";
 import NovaSolicitacaoPage from "@/pages/NovaSolicitacaoPage";
 import SolicitacoesPage from "@/pages/SolicitacoesPage";
+import RankingPage from "@/pages/RankingPage";
 import ChatbotPage from "@/pages/ChatbotPage";
 import NotFoundPage from "@/pages/NotFoundPage";
 

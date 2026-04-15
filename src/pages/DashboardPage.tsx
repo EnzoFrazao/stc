@@ -1,6 +1,6 @@
 import { useNavigate } from "react-router-dom";
 import { Card, CardContent } from "@/components/ui/card";
-import { FileText, List, MessageCircle } from "lucide-react";
+import { FileText, List, Trophy } from "lucide-react";
 import AppHeader from "@/components/AppHeader";
 
 const cards = [
@@ -12,9 +12,15 @@ const cards = [
   },
   {
     icon: List,
-    title: "Minhas Solicitações",
+    title: "Histórico",
     description: "Visualizar solicitações enviadas",
     to: "/solicitacoes",
+  },
+  {
+    icon: Trophy,
+    title: "Ranking da Transparência",
+    description: "Desempenho dos órgãos no envio de dados",
+    to: "/ranking",
   },
 ];
 
@@ -29,7 +35,7 @@ const DashboardPage = () => {
           <h2 className="text-3xl font-bold text-primary mb-2">Bem-vindo ao Sistema STC-MA</h2>
           <p className="text-muted-foreground">Selecione uma opção para começar</p>
         </div>
-        <div className="grid gap-6 md:grid-cols-2 max-w-3xl mx-auto">
+        <div className="grid gap-6 md:grid-cols-3 max-w-5xl mx-auto">
           {cards.map((card, i) => (
             <Card
               key={card.title}
