@@ -10,6 +10,7 @@ import DashboardPage from "@/pages/DashboardPage";
 import OrgaoDashboardPage from "@/pages/OrgaoDashboardPage";
 import NovaSolicitacaoPage from "@/pages/NovaSolicitacaoPage";
 import SolicitacoesPage from "@/pages/SolicitacoesPage";
+import RankingPage from "@/pages/RankingPage";
 import ChatbotPage from "@/pages/ChatbotPage";
 import NotFoundPage from "@/pages/NotFoundPage";
 
@@ -29,6 +30,7 @@ const App = () => (
             <Route path="/orgao-dashboard" element={<ProtectedRoute><OrgaoDashboardPage /></ProtectedRoute>} />
             <Route path="/nova-solicitacao" element={<ProtectedRoute><NovaSolicitacaoPage /></ProtectedRoute>} />
             <Route path="/solicitacoes" element={<ProtectedRoute><SolicitacoesPage /></ProtectedRoute>} />
+            <Route path="/ranking" element={<ProtectedRoute><RankingPage /></ProtectedRoute>} />
             <Route path="/chatbot" element={<ProtectedRoute><ChatbotPage /></ProtectedRoute>} />
             <Route path="/chatbot/:solicitacaoId" element={<ProtectedRoute><ChatbotPage /></ProtectedRoute>} />
             <Route path="*" element={<NotFoundPage />} />
