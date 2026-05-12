@@ -232,8 +232,8 @@ const ChatbotPage = () => {
     : undefined;
 
   return (
-    <div className="min-h-screen bg-accent flex flex-col">
-      <AppHeader title="Assistente de Coleta de Dados" showBack backTo={backTo} />
+    <div className="min-h-dvh bg-gradient-canvas flex flex-col">
+      <AppHeader title="Assistente de coleta de dados" subtitle="Chat institucional" showBack backTo={backTo} />
 
       {solicitacao && (
         <div className="bg-card border-b border-border">

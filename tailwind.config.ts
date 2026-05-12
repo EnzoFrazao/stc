@@ -7,12 +7,20 @@ export default {
   theme: {
     container: {
       center: true,
-      padding: "2rem",
+      padding: { DEFAULT: "1.25rem", md: "2rem" },
       screens: { "2xl": "1400px" },
     },
     extend: {
       fontFamily: {
-        sans: ["Inter", "sans-serif"],
+        sans: ["Inter", "system-ui", "sans-serif"],
+        display: ["Inter Tight", "Inter", "system-ui", "sans-serif"],
+      },
+      fontSize: {
+        "display-2xl": ["3.5rem", { lineHeight: "1.05", letterSpacing: "-0.02em", fontWeight: "700" }],
+        "display-xl":  ["2.75rem", { lineHeight: "1.08", letterSpacing: "-0.02em", fontWeight: "700" }],
+        "display-lg":  ["2.25rem", { lineHeight: "1.1",  letterSpacing: "-0.02em", fontWeight: "700" }],
+        "display-md":  ["1.75rem", { lineHeight: "1.15", letterSpacing: "-0.015em", fontWeight: "700" }],
+        "display-sm":  ["1.375rem", { lineHeight: "1.25", letterSpacing: "-0.01em", fontWeight: "600" }],
       },
       colors: {
         border: "hsl(var(--border))",
@@ -20,6 +28,24 @@ export default {
         ring: "hsl(var(--ring))",
         background: "hsl(var(--background))",
         foreground: "hsl(var(--foreground))",
+        canvas: "hsl(var(--canvas))",
+        surface: {
+          DEFAULT: "hsl(var(--surface))",
+          raised: "hsl(var(--surface-raised))",
+          sunken: "hsl(var(--surface-sunken))",
+        },
+        brand: {
+          50:  "hsl(var(--brand-50))",
+          100: "hsl(var(--brand-100))",
+          200: "hsl(var(--brand-200))",
+          300: "hsl(var(--brand-300))",
+          400: "hsl(var(--brand-400))",
+          500: "hsl(var(--brand-500))",
+          600: "hsl(var(--brand-600))",
+          700: "hsl(var(--brand-700))",
+          800: "hsl(var(--brand-800))",
+          900: "hsl(var(--brand-900))",
+        },
         primary: {
           DEFAULT: "hsl(var(--primary))",
           foreground: "hsl(var(--primary-foreground))",
@@ -86,9 +112,28 @@ export default {
         },
       },
       borderRadius: {
+        xl: "calc(var(--radius) + 4px)",
         lg: "var(--radius)",
         md: "calc(var(--radius) - 2px)",
         sm: "calc(var(--radius) - 4px)",
+      },
+      boxShadow: {
+        xs: "var(--shadow-xs)",
+        soft: "var(--shadow-sm)",
+        card: "var(--shadow-md)",
+        pop: "var(--shadow-lg)",
+        float: "var(--shadow-xl)",
+        brand: "var(--shadow-brand)",
+      },
+      backgroundImage: {
+        "gradient-brand": "var(--gradient-brand)",
+        "gradient-hero": "var(--gradient-hero)",
+        "gradient-canvas": "var(--gradient-canvas)",
+        "gradient-card-soft": "var(--gradient-card-soft)",
+      },
+      transitionTimingFunction: {
+        out: "var(--ease-out)",
+        in: "var(--ease-in)",
       },
       keyframes: {
         "accordion-down": {

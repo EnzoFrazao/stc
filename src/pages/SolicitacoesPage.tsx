@@ -11,19 +11,17 @@ import { Textarea } from "@/components/ui/textarea";
 import {
   mockSolicitacoes, mockRespostas, mockReenvios,
   Solicitacao, SolicitacaoStatus, RespostaOrgao, ValidacaoStatus,
-  orgaos, getCampoById, getOrgaoById, calcProgresso, calcularStatusSolicitacao,
+  orgaos, getCampoById, getOrgaoById,
 } from "@/data/mockData";
-import { Search, Eye, CheckCircle, XCircle, Clock, RotateCcw, Send, Check } from "lucide-react";
+import { calcProgresso, calcularStatusSolicitacao } from "@/lib/solicitacao-utils";
+import { Search, Eye, CheckCircle, XCircle, Clock, RotateCcw, Send, Check, FileSearch } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import AppHeader from "@/components/AppHeader";
-
-const statusStyles: Record<SolicitacaoStatus, string> = {
-  enviada: "bg-status-enviada-bg text-status-enviada border-status-enviada/30",
-  aberta: "bg-status-aberta-bg text-status-aberta border-status-aberta/30",
-  parcial: "bg-status-parcial-bg text-status-parcial border-status-parcial/30",
-  nao_enviada: "bg-status-nao-enviada-bg text-status-nao-enviada border-status-nao-enviada/30",
-  fechada: "bg-status-fechada-bg text-status-fechada border-status-fechada/30",
-};
+import PageShell from "@/components/layout/PageShell";
+import PageHeader from "@/components/layout/PageHeader";
+import SurfaceCard from "@/components/layout/SurfaceCard";
+import StatusPill from "@/components/feedback/StatusPill";
+import EmptyState from "@/components/feedback/EmptyState";
 
 const statusLabel: Record<SolicitacaoStatus, string> = {
   enviada: "Enviada",
@@ -152,16 +150,17 @@ const SolicitacoesPage = () => {
   };
 
   return (
-    <div className="min-h-screen bg-accent">
-      <AppHeader title="Minhas Solicitações" showBack />
-      <main className="container py-8">
-        <Card className="border-0 shadow-lg animate-fade-in">
-          <CardHeader>
-            <CardTitle className="text-primary">Solicitações Enviadas</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {/* Filters */}
-            <div className="flex flex-wrap gap-3 mb-6">
+    <PageShell width="xl" bare>
+      <AppHeader title="STC – Agiliza" showBack />
+      <main className="mx-auto w-full max-w-7xl px-5 md:px-8 py-8">
+        <PageHeader
+          eyebrow="Histórico"
+          title="Solicitações enviadas"
+          description="Filtre, acompanhe e valide as solicitações cadastradas no sistema."
+          breadcrumbs={[{ label: "Solicitações" }]}
+        />
+        <SurfaceCard elevation="card" className="p-6 animate-fade-in">
+          <div className="flex flex-wrap gap-3 mb-6">
               <div className="relative flex-1 min-w-[200px]">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                 <Input className="pl-9" placeholder="Buscar por título..." value={search} onChange={e => { setSearch(e.target.value); setPage(1); }} />
@@ -183,50 +182,56 @@ const SolicitacoesPage = () => {
             </div>
 
             {/* Table */}
-            <div className="rounded-lg border overflow-auto">
+            {paginated.length === 0 ? (
+              <EmptyState
+                icon={FileSearch}
+                title="Nenhuma solicitação encontrada"
+                description="Ajuste os filtros ou cadastre uma nova solicitação."
+              />
+            ) : (
+            <div className="rounded-xl border border-border/70 bg-surface overflow-auto shadow-xs">
               <Table>
                 <TableHeader>
-                  <TableRow className="bg-muted/50">
-                    <TableHead>ID</TableHead>
-                    <TableHead>Órgãos</TableHead>
-                    <TableHead>Título</TableHead>
-                    <TableHead>Criação</TableHead>
-                    <TableHead>Prazo</TableHead>
-                     <TableHead>Status</TableHead>
-                     <TableHead>Visualizada</TableHead>
-                     <TableHead>Ações</TableHead>
+                  <TableRow className="bg-surface-sunken hover:bg-surface-sunken">
+                    <TableHead className="hidden text-[11px] font-semibold uppercase tracking-wide text-muted-foreground sm:table-cell">ID</TableHead>
+                    <TableHead className="hidden text-[11px] font-semibold uppercase tracking-wide text-muted-foreground md:table-cell">Órgãos</TableHead>
+                    <TableHead className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Título</TableHead>
+                    <TableHead className="hidden text-[11px] font-semibold uppercase tracking-wide text-muted-foreground lg:table-cell">Criação</TableHead>
+                    <TableHead className="hidden text-[11px] font-semibold uppercase tracking-wide text-muted-foreground lg:table-cell">Prazo</TableHead>
+                    <TableHead className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Status</TableHead>
+                    <TableHead className="hidden text-[11px] font-semibold uppercase tracking-wide text-muted-foreground md:table-cell">Visualizada</TableHead>
+                    <TableHead className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Ações</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {paginated.map(s => (
-                    <TableRow key={s.id} className="hover:bg-muted/30 transition-colors">
-                      <TableCell className="font-mono text-sm">{s.id}</TableCell>
-                      <TableCell className="text-sm">
+                    <TableRow key={s.id} className="cursor-pointer hover:bg-accent/40 transition-colors">
+                      <TableCell className="hidden font-mono text-xs text-muted-foreground tabular sm:table-cell">{s.id}</TableCell>
+                      <TableCell className="hidden text-sm md:table-cell">
                         <div className="flex flex-wrap gap-1">
                           {s.orgaosSelecionados.map(oId => {
                             const orgao = getOrgaoById(oId);
                             return orgao ? (
-                              <Badge key={oId} variant="outline" className="text-xs">{orgao.nome.replace("Secretaria de ", "")}</Badge>
+                              <Badge key={oId} variant="outline" className="bg-accent/40 text-[11px] font-medium text-primary border-brand-100">
+                                {orgao.nome.replace("Secretaria de ", "")}
+                              </Badge>
                             ) : null;
                           })}
                         </div>
                       </TableCell>
-                      <TableCell className="text-sm max-w-[200px] truncate">{s.titulo}</TableCell>
-                      <TableCell className="text-sm">{s.createdAt}</TableCell>
-                      <TableCell className="text-sm">D+{s.prazoDias}</TableCell>
+                      <TableCell className="text-sm font-medium text-foreground max-w-[220px] truncate">{s.titulo}</TableCell>
+                      <TableCell className="hidden text-sm text-muted-foreground tabular lg:table-cell">{s.createdAt}</TableCell>
+                      <TableCell className="hidden text-sm tabular lg:table-cell">D+{s.prazoDias}</TableCell>
                       <TableCell>
-                        <Badge variant="outline" className={statusStyles[s.status]}>{statusLabel[s.status]}</Badge>
+                        <StatusPill tone={s.status}>{statusLabel[s.status]}</StatusPill>
                       </TableCell>
-                      <TableCell>
-                        <Badge variant="outline" className={s.visualizada
-                          ? "bg-status-enviada-bg text-status-enviada border-status-enviada/30"
-                          : "bg-status-nao-enviada-bg text-status-nao-enviada border-status-nao-enviada/30"
-                        }>
+                      <TableCell className="hidden md:table-cell">
+                        <StatusPill tone={s.visualizada ? "enviada" : "nao_enviada"}>
                           {s.visualizada ? "Sim" : "Não"}
-                        </Badge>
+                        </StatusPill>
                       </TableCell>
                       <TableCell>
-                        <Button size="sm" variant="ghost" className="gap-1 text-secondary" onClick={() => setSelected(s)}>
+                        <Button size="sm" variant="ghost" className="gap-1 text-brand-600 hover:bg-accent" onClick={() => setSelected(s)}>
                           <Eye className="h-4 w-4" /> Ver
                         </Button>
                       </TableCell>
@@ -235,6 +240,7 @@ const SolicitacoesPage = () => {
                 </TableBody>
               </Table>
             </div>
+            )}
 
             {totalPages > 1 && (
               <div className="flex items-center justify-between mt-4">
@@ -246,19 +252,18 @@ const SolicitacoesPage = () => {
                 </div>
               </div>
             )}
-          </CardContent>
-        </Card>
+        </SurfaceCard>
 
         {/* Detail / Verification dialog */}
         <Dialog open={!!selected} onOpenChange={() => { setSelected(null); setRejectingItemId(null); setRejectReason(""); }}>
           <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
             <DialogHeader>
               <DialogTitle className="text-primary flex items-center gap-3">
-                {selected?.id}
+                <span className="font-mono text-xs text-muted-foreground tabular">{selected?.id}</span>
                 {selected && (
-                  <Badge variant="outline" className={statusStyles[calcularStatusSolicitacao(selected, respostas)]}>
+                  <StatusPill tone={calcularStatusSolicitacao(selected, respostas)}>
                     {statusLabel[calcularStatusSolicitacao(selected, respostas)]}
-                  </Badge>
+                  </StatusPill>
                 )}
               </DialogTitle>
             </DialogHeader>
@@ -312,7 +317,9 @@ const SolicitacoesPage = () => {
                                       <p className="text-xs text-muted-foreground italic">Aguardando envio</p>
                                     )}
                                     {item.validacaoStatus === "validado" && (
-                                      <p className="text-xs text-status-enviada font-medium">✓ Verificado</p>
+                                      <p className="inline-flex items-center gap-1 text-xs text-status-enviada font-medium">
+                                        <Check className="h-3 w-3" /> Verificado
+                                      </p>
                                     )}
                                     {item.motivoRecusa && (
                                       <p className="text-xs text-status-nao-enviada">Motivo: {item.motivoRecusa}</p>
@@ -388,15 +395,16 @@ const SolicitacoesPage = () => {
                   return (
                     <DialogFooter className="flex gap-3 pt-4 border-t sm:justify-between">
                       <Button
+                        variant="destructive"
                         disabled={!hasRejected}
-                        className={`gap-2 ${hasRejected ? "bg-destructive hover:bg-destructive/90 text-white" : "bg-muted text-muted-foreground cursor-not-allowed"}`}
+                        className="gap-2"
                         onClick={() => handleReenviarRejeitados(selected)}
                       >
                         <Send className="h-4 w-4" /> Reenviar solicitação
                       </Button>
                       <Button
                         disabled={!allVerified}
-                        className={`gap-2 ${allVerified ? "bg-status-enviada hover:bg-status-enviada/90 text-white" : "bg-muted text-muted-foreground cursor-not-allowed"}`}
+                        className="gap-2 bg-status-enviada hover:bg-status-enviada/90 text-white disabled:bg-muted disabled:text-muted-foreground"
                         onClick={handleConcluirVerificacao}
                       >
                         <CheckCircle className="h-4 w-4" /> Concluir verificação
@@ -409,7 +417,7 @@ const SolicitacoesPage = () => {
           </DialogContent>
         </Dialog>
       </main>
-    </div>
+    </PageShell>
   );
 };
 

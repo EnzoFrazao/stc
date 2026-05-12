@@ -74,8 +74,8 @@ const NovaSolicitacaoPage = () => {
   };
 
   return (
-    <div className="min-h-screen bg-accent">
-      <AppHeader title="Nova Solicitação" showBack />
+    <div className="min-h-dvh bg-gradient-canvas">
+      <AppHeader title="Nova solicitação" subtitle="Solicitar dados aos órgãos" showBack />
       <main className="container py-8">
         <form onSubmit={handleSubmit}>
           <div className="grid gap-6 lg:grid-cols-3">

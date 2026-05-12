@@ -2,33 +2,30 @@ import { useState, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
 import {
-  mockSolicitacoes, mockRespostas, orgaos, camposPlanilha,
-  getRespostasForSolicitacao, Solicitacao, RespostaOrgao,
+  mockSolicitacoes, mockRespostas,
+  Solicitacao, RespostaOrgao,
 } from "@/data/mockData";
-import { Card, CardContent } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Search, Calendar, ArrowRight, AlertCircle, Clock } from "lucide-react";
+import { Search, Calendar, ArrowRight, AlertCircle, Clock, Inbox, CheckCircle2, AlertOctagon } from "lucide-react";
 import AppHeader from "@/components/AppHeader";
+import PageShell from "@/components/layout/PageShell";
+import PageHeader from "@/components/layout/PageHeader";
+import SurfaceCard from "@/components/layout/SurfaceCard";
+import StatusPill from "@/components/feedback/StatusPill";
+import EmptyState from "@/components/feedback/EmptyState";
+import MetricTile from "@/components/feedback/MetricTile";
+import { cn } from "@/lib/utils";
 
 type StatusVisual = "enviada" | "aberta" | "parcial" | "nao_enviada" | "fechada";
 
-const statusConfig: Record<StatusVisual, { label: string; className: string }> = {
-  nao_enviada: { label: "Não Enviada", className: "bg-status-nao-enviada-bg text-status-nao-enviada border-status-nao-enviada/30" },
-  aberta: { label: "Aberta", className: "bg-status-aberta-bg text-status-aberta border-status-aberta/30" },
-  fechada: { label: "Fechada", className: "bg-status-fechada-bg text-status-fechada border-status-fechada/30" },
-  parcial: { label: "Parcial", className: "bg-status-parcial-bg text-status-parcial border-status-parcial/30" },
-  enviada: { label: "Enviada", className: "bg-status-enviada-bg text-status-enviada border-status-enviada/30" },
-};
-
-const statusBorderColor: Record<StatusVisual, string> = {
-  nao_enviada: "border-l-[hsl(var(--status-nao-enviada))]",
-  aberta: "border-l-[hsl(var(--status-aberta))]",
-  fechada: "border-l-[hsl(var(--status-fechada))]",
-  parcial: "border-l-[hsl(var(--status-parcial))]",
-  enviada: "border-l-[hsl(var(--status-enviada))]",
+const statusLabel: Record<StatusVisual, string> = {
+  nao_enviada: "Não Enviada",
+  aberta: "Aberta",
+  fechada: "Fechada",
+  parcial: "Parcial",
+  enviada: "Enviada",
 };
 
 const statusPriority: Record<StatusVisual, number> = {
@@ -101,6 +98,14 @@ const OrgaoDashboardPage = () => {
     });
   }, [solicitacoesDoOrgao, orgaoId]);
 
+  const summary = useMemo(() => {
+    const total = items.length;
+    const pendentes = items.filter(i => i.status === "aberta" || i.status === "fechada" || i.status === "parcial").length;
+    const respondidas = items.filter(i => i.status === "enviada").length;
+    const atrasadas = items.filter(i => i.dias < 0 && i.status !== "enviada").length;
+    return { total, pendentes, respondidas, atrasadas };
+  }, [items]);
+
   const filtered = useMemo(() => {
     let result = items;
 
@@ -127,33 +132,41 @@ const OrgaoDashboardPage = () => {
   }, [items, search, statusFilter, prazoFilter]);
 
   const handleAccessChat = (solId: string) => {
-    // Find the chat for this orgao + solicitation
     navigate(`/chatbot/${solId}`);
   };
 
   return (
-    <div className="min-h-screen bg-accent">
-      <AppHeader title="STC – Agiliza" />
+    <PageShell width="xl" bare>
+      <AppHeader title="STC – Agiliza" subtitle={user?.name ?? "Órgão respondente"} />
 
-      <main className="container py-8">
-        <div className="mb-8 animate-fade-in">
-          <h2 className="text-2xl font-bold text-primary mb-1">Minhas Solicitações</h2>
-          <p className="text-muted-foreground">Acompanhe e responda as solicitações enviadas pela Secretaria</p>
+      <main className="mx-auto w-full max-w-7xl px-5 md:px-8 py-8">
+        <PageHeader
+          eyebrow="Painel do órgão"
+          title="Minhas solicitações"
+          description="Acompanhe e responda as solicitações enviadas pela Secretaria."
+        />
+
+        {/* Summary */}
+        <div className="mb-6 grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
+          <MetricTile icon={Inbox} label="Total" value={summary.total} sub="recebidas" />
+          <MetricTile icon={Clock} label="Pendentes" value={summary.pendentes} sub="aguardando envio" />
+          <MetricTile icon={CheckCircle2} label="Respondidas" value={summary.respondidas} sub="completas" />
+          <MetricTile icon={AlertOctagon} label="Atrasadas" value={summary.atrasadas} sub="fora do prazo" />
         </div>
 
         {/* Filters */}
-        <div className="flex flex-col sm:flex-row gap-3 mb-6">
+        <div className="mb-6 flex flex-col gap-3 sm:flex-row">
           <div className="relative flex-1">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <Input
               placeholder="Buscar solicitação..."
               value={search}
               onChange={e => setSearch(e.target.value)}
-              className="pl-10"
+              className="h-11 bg-surface pl-10"
             />
           </div>
           <Select value={statusFilter} onValueChange={setStatusFilter}>
-            <SelectTrigger className="w-full sm:w-[180px]">
+            <SelectTrigger className="h-11 w-full bg-surface sm:w-[200px]">
               <SelectValue placeholder="Status" />
             </SelectTrigger>
             <SelectContent>
@@ -166,7 +179,7 @@ const OrgaoDashboardPage = () => {
             </SelectContent>
           </Select>
           <Select value={prazoFilter} onValueChange={setPrazoFilter}>
-            <SelectTrigger className="w-full sm:w-[180px]">
+            <SelectTrigger className="h-11 w-full bg-surface sm:w-[200px]">
               <SelectValue placeholder="Prazo" />
             </SelectTrigger>
             <SelectContent>
@@ -180,77 +193,84 @@ const OrgaoDashboardPage = () => {
 
         {/* Cards */}
         {filtered.length === 0 ? (
-          <Card className="border-0 shadow-lg">
-            <CardContent className="flex flex-col items-center justify-center py-16 text-muted-foreground">
-              <Search className="h-12 w-12 mb-4 opacity-40" />
-              <p className="text-lg font-medium">Nenhuma solicitação encontrada</p>
-              <p className="text-sm">Ajuste os filtros ou aguarde novas solicitações</p>
-            </CardContent>
-          </Card>
+          <EmptyState
+            icon={Search}
+            title="Nenhuma solicitação encontrada"
+            description="Ajuste os filtros ou aguarde novas solicitações da Secretaria."
+          />
         ) : (
-          <div className="space-y-4">
+          <div className="space-y-3">
             {filtered.map(({ sol, status, totalItens, itensEnviados, dias, prazo }, idx) => {
               const isOverdue = dias < 0;
               const isDone = status === "enviada";
 
               return (
-                <Card
+                <SurfaceCard
                   key={sol.id}
-                  className={`border-0 shadow-lg border-l-4 transition-all duration-300 hover:shadow-xl animate-slide-up ${
-                    statusBorderColor[status]
-                  } ${isOverdue ? "ring-1 ring-destructive/20" : ""} ${isDone ? "opacity-70" : ""}`}
-                  style={{ animationDelay: `${idx * 60}ms` }}
+                  elevation="soft"
+                  interactive
+                  accentBar={status}
+                  className={cn(
+                    "p-5 animate-slide-up",
+                    isOverdue && "ring-1 ring-destructive/15",
+                    isDone && "opacity-80",
+                  )}
+                  style={{ animationDelay: `${idx * 40}ms` }}
+                  onClick={() => handleAccessChat(sol.id)}
                 >
-                  <CardContent className="p-5">
-                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-3 mb-2">
-                          <h3 className="font-semibold text-card-foreground truncate">{sol.titulo}</h3>
-                          <Badge variant="outline" className={statusConfig[status].className}>
-                            {statusConfig[status].label}
-                          </Badge>
-                        </div>
-
-                        <div className="flex flex-wrap items-center gap-4 text-sm text-muted-foreground">
-                          <span className="flex items-center gap-1.5">
-                            <Calendar className="h-3.5 w-3.5" />
-                            Prazo: {formatDate(prazo)}
-                          </span>
-                          <span className={`flex items-center gap-1.5 ${isOverdue ? "text-destructive font-medium" : ""}`}>
-                            {isOverdue ? (
-                              <>
-                                <AlertCircle className="h-3.5 w-3.5" />
-                                {Math.abs(dias)} dia(s) atrasado
-                              </>
-                            ) : (
-                              <>
-                                <Clock className="h-3.5 w-3.5" />
-                                {dias} dia(s) restante(s)
-                              </>
-                            )}
-                          </span>
-                          <span>
-                            Itens: <strong>{itensEnviados}/{totalItens}</strong>
-                          </span>
-                        </div>
+                  <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h3 className="font-display text-base font-semibold text-primary truncate">
+                          {sol.titulo}
+                        </h3>
+                        <StatusPill tone={status}>{statusLabel[status]}</StatusPill>
                       </div>
 
-                      <Button
-                        className="gap-2 bg-secondary hover:bg-secondary/90 shrink-0"
-                        onClick={() => handleAccessChat(sol.id)}
-                      >
-                        Acessar solicitação
-                        <ArrowRight className="h-4 w-4" />
-                      </Button>
+                      <div className="mt-2 flex flex-wrap items-center gap-x-5 gap-y-1.5 text-xs text-muted-foreground">
+                        <span className="inline-flex items-center gap-1.5">
+                          <Calendar className="h-3.5 w-3.5" />
+                          Prazo: <span className="tabular text-foreground">{formatDate(prazo)}</span>
+                        </span>
+                        <span
+                          className={cn(
+                            "inline-flex items-center gap-1.5",
+                            isOverdue && "font-semibold text-destructive",
+                          )}
+                        >
+                          {isOverdue ? (
+                            <>
+                              <AlertCircle className="h-3.5 w-3.5" />
+                              {Math.abs(dias)} dia(s) atrasado
+                            </>
+                          ) : (
+                            <>
+                              <Clock className="h-3.5 w-3.5" />
+                              {dias} dia(s) restante(s)
+                            </>
+                          )}
+                        </span>
+                        <span>
+                          Itens: <strong className="tabular text-foreground">{itensEnviados}/{totalItens}</strong>
+                        </span>
+                      </div>
                     </div>
-                  </CardContent>
-                </Card>
+
+                    <Button
+                      className="shrink-0 gap-2 bg-gradient-brand shadow-soft"
+                      onClick={(e) => { e.stopPropagation(); handleAccessChat(sol.id); }}
+                    >
+                      Acessar
+                      <ArrowRight className="h-4 w-4" />
+                    </Button>
+                  </div>
+                </SurfaceCard>
               );
             })}
           </div>
         )}
       </main>
-    </div>
+    </PageShell>
   );
 };
 
