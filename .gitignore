@@ -57,3 +57,8 @@ pnpm-debug.log*
 *.sqlite3
 *.db
 *.dump
+
+# Internal project docs and local session artifacts (public repo)
+docs/
+screenshots/
+.claude/
