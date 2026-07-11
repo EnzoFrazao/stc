@@ -1,12 +1,59 @@
+# Dependencies and package-manager caches
 node_modules/
-dist/
-.vite/
+.pnp/
+.pnp.*
 
-*.local
+# Local environment and secrets
 .env
 .env.*
+!.env.example
+*.local
+config.json
+secrets.json
+secrets.*.json
+credentials*.json
+service-account*.json
+*.pem
+*.key
+*.p12
 
+# Build output and generated assets
+dist/
+build/
+out/
+.vite/
+coverage/
+playwright-report/
+test-results/
+
+# Python local environments and caches
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+
+# System and editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs
+*.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
+
+# Backups and temporary files
+*.bak
+*.backup
+*.tmp
+*.temp
+*.orig
+*.sqlite
+*.sqlite3
+*.db
+*.dump
