@@ -1,0 +1,903 @@
+import { afterEach, describe, expect, test } from "vitest";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import App, {
+  attachmentsMeetRequirement,
+  createReceipt,
+  deriveCycleStatus,
+  statusAfterFocal,
+  statusAfterRespondentSend,
+  type Collection,
+  type CycleItem,
+} from "./App";
+
+Object.defineProperty(window, "scrollTo", {
+  value: () => undefined,
+  writable: true,
+});
+
+afterEach(() => cleanup());
+
+const firstCollectionUrl = "https://agiliza.ma.gov.br/coleta/agz-100-seduc";
+const clipboardErrorMessage = "Não foi possível copiar — selecione o link exibido";
+
+function replaceClipboard(
+  clipboard: { writeText: (value: string) => Promise<void> } | undefined,
+) {
+  const originalClipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: clipboard,
+  });
+
+  return () => {
+    if (originalClipboard) {
+      Object.defineProperty(navigator, "clipboard", originalClipboard);
+    } else {
+      Reflect.deleteProperty(navigator, "clipboard");
+    }
+  };
+}
+
+function expectSelectableUrlInCopyCard(copyButton: HTMLElement) {
+  const card = copyButton.closest("article");
+  expect(card).toBeTruthy();
+  const visibleUrl = within(card as HTMLElement).getByText(firstCollectionUrl);
+  expect(visibleUrl.tagName).toBe("CODE");
+  expect(visibleUrl.classList.contains("collection-link-text")).toBe(true);
+  expect(visibleUrl.closest("button")).toBeNull();
+}
+
+describe("Agiliza Transparência", () => {
+  test("contagem permite mínimo e excedente", () => {
+    expect(attachmentsMeetRequirement(2, 3)).toBe(false);
+    expect(attachmentsMeetRequirement(3, 3)).toBe(true);
+    expect(attachmentsMeetRequirement(4, 3)).toBe(true);
+  });
+
+  test("comprovante permite voltar às etapas em modo somente leitura", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Entrar como respondente" }));
+    await user.type(
+      screen.getByLabelText("E-mail do respondente"),
+      "clara.nunes@sinfra.ma.gov.br",
+    );
+    await user.type(screen.getByLabelText("Senha do respondente"), "senha-simulada");
+    await user.click(screen.getByRole("button", { name: "Acessar minhas coletas" }));
+    await user.click(screen.getAllByRole("button", { name: "Ver comprovante" })[0]);
+    const howTo = screen.getByRole("button", { name: "1 Como responder" });
+    expect((howTo as HTMLButtonElement).disabled).toBe(false);
+    await user.click(howTo);
+    expect(screen.getByText("Resposta enviada — consulta somente leitura")).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: /Preencher e subir/ }));
+    expect(screen.getByText("Resposta enviada — consulta somente leitura")).toBeTruthy();
+    expect(screen.getByText("mt-0018_sinfra_obras.xlsx")).toBeTruthy();
+    expect(
+      screen.queryByRole("button", {
+        name: /Arraste aqui ou clique para simular a seleção/,
+      }),
+    ).toBeNull();
+    expect(
+      screen.queryByText("Arraste aqui ou clique para simular a seleção"),
+    ).toBeNull();
+    expect(
+      screen.queryByLabelText("Simular planilha fora do modelo (colunas divergentes)"),
+    ).toBeNull();
+    expect(screen.queryByRole("button", { name: "Salvar rascunho" })).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: /Enviar e gerar comprovante|Reenviar corrigido/ }),
+    ).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "Não tenho esta informação" }),
+    ).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: /Anexos obrigatórios/ }));
+    expect(screen.getByText("Resposta enviada — consulta somente leitura")).toBeTruthy();
+    expect(screen.getByText("edital_042_2026.pdf")).toBeTruthy();
+    expect(screen.getByText("publicacao_aviso_042.pdf")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Enviar arquivo" })).toBeNull();
+    expect(screen.queryAllByRole("button", { name: /^Remover / })).toHaveLength(0);
+    expect(
+      screen.queryByRole("button", { name: /Não tenho todos os anexos.*falar com a STC/ }),
+    ).toBeNull();
+    expect(screen.queryByRole("button", { name: "Salvar rascunho" })).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: /Enviar e gerar comprovante|Reenviar corrigido/ }),
+    ).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "Não tenho esta informação" }),
+    ).toBeNull();
+  });
+
+  test("stepper anuncia semanticamente a etapa atual", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Abrir link da coleta (SEI)" }));
+    await user.type(
+      screen.getByPlaceholderText("ex.: joao.lima@seduc.ma.gov.br"),
+      "joao.lima@seduc.ma.gov.br",
+    );
+    await user.type(screen.getByLabelText("Senha"), "senha-simulada");
+    await user.click(screen.getByRole("button", { name: "Entrar" }));
+
+    const firstStep = screen.getByRole("button", { name: "1 Como responder" });
+    const secondStep = screen.getByRole("button", { name: "2 Preencher e subir" });
+    expect(firstStep.getAttribute("aria-current")).toBe("step");
+    expect(secondStep.getAttribute("aria-current")).toBeNull();
+
+    await user.click(secondStep);
+    expect(firstStep.getAttribute("aria-current")).toBeNull();
+    expect(secondStep.getAttribute("aria-current")).toBe("step");
+  });
+
+  test("drop usa somente o nome simulado e ignora o arquivo real", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Abrir link da coleta (SEI)" }));
+    await user.type(
+      screen.getByPlaceholderText("ex.: joao.lima@seduc.ma.gov.br"),
+      "joao.lima@seduc.ma.gov.br",
+    );
+    await user.type(screen.getByLabelText("Senha"), "senha-simulada");
+    await user.click(screen.getByRole("button", { name: "Entrar" }));
+    await user.click(screen.getByRole("button", { name: /Preencher e subir/ }));
+
+    const dropInstruction = screen.getByText("Arraste aqui ou clique para simular a seleção");
+    const dropzone = dropInstruction.closest(".dropzone");
+    expect(dropzone).toBeTruthy();
+    const realFile = new File(["conteúdo sentinela"], "arquivo-real-sentinela.xlsx", {
+      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    });
+
+    fireEvent.dragOver(dropzone as HTMLElement, { dataTransfer: { files: [realFile] } });
+    fireEvent.drop(dropzone as HTMLElement, { dataTransfer: { files: [realFile] } });
+
+    expect(screen.getByText("mt-0016_seduc_preenchida.xlsx")).toBeTruthy();
+    expect(screen.queryByText("arquivo-real-sentinela.xlsx")).toBeNull();
+  });
+
+  test("faixa estrutural só usa sucesso com planilha e anexos completos", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Abrir link da coleta (SEI)" }));
+    await user.type(
+      screen.getByPlaceholderText("ex.: joao.lima@seduc.ma.gov.br"),
+      "joao.lima@seduc.ma.gov.br",
+    );
+    await user.type(screen.getByLabelText("Senha"), "senha-simulada");
+    await user.click(screen.getByRole("button", { name: "Entrar" }));
+    await user.click(screen.getByRole("button", { name: /Preencher e subir/ }));
+
+    const qualityStrip = () =>
+      screen
+        .getByText("Checagem estrutural no envio — duas conferências independentes")
+        .closest(".quality-strip") as HTMLElement;
+
+    expect(qualityStrip().classList.contains("warning")).toBe(true);
+    expect(qualityStrip().classList.contains("success")).toBe(false);
+
+    await user.click(
+      screen.getByRole("button", { name: /Arraste aqui ou clique para simular a seleção/ }),
+    );
+    expect(qualityStrip().classList.contains("warning")).toBe(true);
+    expect(qualityStrip().classList.contains("success")).toBe(false);
+
+    await user.click(screen.getByRole("button", { name: /Anexos obrigatórios/ }));
+    const addAttachment = screen.getByRole("button", { name: "Enviar arquivo" });
+    await user.click(addAttachment);
+    await user.click(addAttachment);
+    await user.click(addAttachment);
+    await user.click(screen.getByRole("button", { name: /Preencher e subir/ }));
+    expect(qualityStrip().classList.contains("success")).toBe(true);
+
+    await user.click(screen.getByLabelText("Simular planilha fora do modelo (colunas divergentes)"));
+    expect(qualityStrip().classList.contains("danger")).toBe(true);
+    expect(qualityStrip().classList.contains("success")).toBe(false);
+  });
+
+  test("renderiza as três portas institucionais", () => {
+    render(<App />);
+    expect(screen.getByRole("button", { name: "Entrar como ponto focal" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Entrar como STC" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Abrir link da coleta (SEI)" })).toBeTruthy();
+  });
+
+  test("Registro edita dados básicos do objeto fixo", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Entrar como STC" }));
+    await user.click(screen.getByRole("button", { name: "Registro" }));
+    await user.click(screen.getByRole("button", { name: "Editar MT-0016" }));
+    const name = screen.getByLabelText("Nome do objeto");
+    await user.clear(name);
+    await user.type(name, "Estagiários estaduais");
+    await user.click(screen.getByRole("button", { name: "Salvar objeto" }));
+    expect(screen.getByText("MT-0016 · Estagiários Estaduais")).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: "Criar coleta" }));
+    await user.click(screen.getByRole("button", { name: /Objeto fixo/i }));
+    const updatedObject = screen.getByRole("button", {
+      name: /MT-0016\s+Estagiários Estaduais/i,
+    });
+    expect(updatedObject).toBeTruthy();
+    await user.click(updatedObject);
+    await user.click(
+      screen.getByRole("button", { name: "Acionar e gerar links das coletas" }),
+    );
+
+    expect(
+      screen.getByRole("heading", { name: "Coleta MT-0016 - Estagiários Estaduais" }),
+    ).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Estagiários Estaduais" })).toBeTruthy();
+    expect(screen.getAllByRole("button", { name: "Simular acesso pelo link" })).toHaveLength(2);
+  });
+
+  test("Registro invalida a seleção editada antes de reconstruir o rascunho", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Entrar como STC" }));
+    await user.click(screen.getByRole("button", { name: "Criar coleta" }));
+    await user.click(screen.getByRole("button", { name: /Objeto fixo/i }));
+    await user.click(screen.getByRole("button", { name: /MT-0016\s+Estagiário/i }));
+    expect(screen.getByDisplayValue("Coleta MT-0016 - Estagiário")).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: "Registro" }));
+    await user.click(screen.getByRole("button", { name: "Editar MT-0016" }));
+    const code = screen.getByLabelText("Código do objeto");
+    const name = screen.getByLabelText("Nome do objeto");
+    await user.clear(code);
+    await user.type(code, "MT-0099");
+    await user.clear(name);
+    await user.type(name, "Estagiários estaduais");
+    await user.click(screen.getByRole("button", { name: "Salvar objeto" }));
+
+    const updatedRow = screen.getByRole("button", { name: "Editar MT-0099" }).closest("article");
+    expect(updatedRow).toBeTruthy();
+    const updatedRegistry = within(updatedRow as HTMLElement);
+    await user.type(updatedRegistry.getByPlaceholderText("Adicionar anexo ao registro"), "Anexo atualizado");
+    await user.click(updatedRegistry.getByRole("button", { name: "Adicionar" }));
+
+    await user.click(screen.getByRole("button", { name: "Criar coleta" }));
+    expect(screen.queryByDisplayValue("Coleta MT-0016 - Estagiário")).toBeNull();
+    const updatedObject = screen.getByRole("button", { name: /MT-0099\s+Estagiários Estaduais/i });
+    await user.click(updatedObject);
+    expect(screen.getByDisplayValue("Coleta MT-0099 - Estagiários Estaduais")).toBeTruthy();
+    expect(screen.getByDisplayValue("Anexo atualizado")).toBeTruthy();
+  });
+
+  test("Registro migra campos e anexos quando o código do objeto muda", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Entrar como STC" }));
+    await user.click(screen.getByRole("button", { name: "Registro" }));
+
+    await user.click(screen.getByRole("button", { name: "Campos / informações" }));
+    await user.selectOptions(
+      screen.getByLabelText("Objeto"),
+      screen.getByRole("option", { name: /MT-0016/ }),
+    );
+    await user.type(
+      screen.getByPlaceholderText("Nome do campo (ex.: Valor empenhado)"),
+      "Campo migrado",
+    );
+    await user.click(screen.getByRole("button", { name: "Adicionar campo" }));
+
+    await user.click(screen.getByRole("button", { name: "Objetos fixos" }));
+    await user.click(screen.getByRole("button", { name: "Editar MT-0016" }));
+    const code = screen.getByLabelText("Código do objeto");
+    const subject = screen.getByLabelText("Tema do objeto");
+    const cadence = screen.getByLabelText("Cadência do objeto");
+    await user.clear(code);
+    await user.type(code, "mt-0099");
+    await user.clear(subject);
+    await user.type(subject, "Gestão de pessoas");
+    await user.clear(cadence);
+    await user.type(cadence, "Trimestral");
+    await user.click(screen.getByRole("button", { name: "Salvar objeto" }));
+
+    expect(screen.getByText("MT-0099 · Estagiário")).toBeTruthy();
+    expect(screen.getByText(/Gestão de pessoas · Trimestral/)).toBeTruthy();
+    expect(screen.getByText("Termo de compromisso do estágio")).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: "Campos / informações" }));
+    expect(screen.getByRole("option", { name: /MT-0099/ })).toBeTruthy();
+    expect(screen.getByText("Campo migrado")).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: "Criar coleta" }));
+    await user.click(screen.getByRole("button", { name: /Objeto fixo/i }));
+    await user.click(screen.getByRole("button", { name: /MT-0099\s+Estagiário/i }));
+    expect(screen.getByDisplayValue("Termo de compromisso do estágio")).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: "Registro" }));
+    await user.click(screen.getByRole("button", { name: "Cadastrar objeto fixo" }));
+    await user.type(screen.getByLabelText("Código"), "MT-0016");
+    await user.type(screen.getByLabelText("Nome"), "Novo objeto no código liberado");
+    await user.type(
+      screen.getByPlaceholderText("ex.: Número do contrato"),
+      "Campo do novo objeto",
+    );
+    await user.click(screen.getByRole("button", { name: "Adicionar campo" }));
+    await user.click(screen.getByRole("button", { name: "Salvar objeto fixo no registro" }));
+
+    expect(screen.getByText("MT-0016 · Novo Objeto No Código Liberado")).toBeTruthy();
+  }, 10000);
+
+  test("Registro edita objeto cadastrado localmente", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Entrar como STC" }));
+    await user.click(screen.getByRole("button", { name: "Registro" }));
+    await user.click(screen.getByRole("button", { name: "Cadastrar objeto fixo" }));
+    await user.type(screen.getByLabelText("Código"), "MT-0098");
+    await user.type(screen.getByLabelText("Nome"), "Objeto local");
+    await user.type(
+      screen.getByPlaceholderText("ex.: Número do contrato"),
+      "Campo local",
+    );
+    await user.click(screen.getByRole("button", { name: "Adicionar campo" }));
+    await user.click(screen.getByRole("button", { name: "Salvar objeto fixo no registro" }));
+
+    await user.click(screen.getByRole("button", { name: "Editar MT-0098" }));
+    const code = screen.getByLabelText("Código do objeto");
+    const name = screen.getByLabelText("Nome do objeto");
+    const subject = screen.getByLabelText("Tema do objeto");
+    const cadence = screen.getByLabelText("Cadência do objeto");
+    await user.clear(code);
+    await user.type(code, "MT-0097");
+    await user.clear(name);
+    await user.type(name, "Objeto local editado");
+    await user.clear(subject);
+    await user.type(subject, "Tema local editado");
+    await user.clear(cadence);
+    await user.type(cadence, "Anual");
+    await user.click(screen.getByRole("button", { name: "Salvar objeto" }));
+
+    expect(screen.getByText("MT-0097 · Objeto Local Editado")).toBeTruthy();
+    expect(screen.getByText(/Tema local editado\s*·\s*Anual/)).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: "Cadastrar objeto fixo" }));
+    await user.type(screen.getByLabelText("Código"), "MT-0098");
+    await user.type(screen.getByLabelText("Nome"), "Objeto com código reutilizado");
+    await user.type(
+      screen.getByPlaceholderText("ex.: Número do contrato"),
+      "Campo reutilizado",
+    );
+    await user.click(screen.getByRole("button", { name: "Adicionar campo" }));
+    await user.click(screen.getByRole("button", { name: "Salvar objeto fixo no registro" }));
+    await user.click(screen.getByRole("button", { name: "Editar MT-0098" }));
+
+    expect(screen.getAllByLabelText("Nome do objeto")).toHaveLength(1);
+    expect(screen.getByDisplayValue("Objeto com código reutilizado")).toBeTruthy();
+  }, 10000);
+
+  test("Registro rejeita criação com código já ocupado", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Entrar como STC" }));
+    await user.click(screen.getByRole("button", { name: "Registro" }));
+    await user.click(screen.getByRole("button", { name: "Cadastrar objeto fixo" }));
+    await user.type(screen.getByLabelText("Código"), "mt-0016");
+    await user.type(screen.getByLabelText("Nome"), "Objeto duplicado");
+    await user.type(screen.getByPlaceholderText("ex.: Número do contrato"), "Campo duplicado");
+    await user.click(screen.getByRole("button", { name: "Adicionar campo" }));
+    await user.click(screen.getByRole("button", { name: "Salvar objeto fixo no registro" }));
+
+    expect(screen.getByRole("alert").textContent).toContain("Já existe um objeto ou registro com esse código.");
+    expect(screen.getByRole("button", { name: "Salvar objeto fixo no registro" })).toBeTruthy();
+    expect(screen.getAllByRole("button", { name: "Editar MT-0016" })).toHaveLength(1);
+    expect(screen.getByText("MT-0016 · Estagiário")).toBeTruthy();
+  });
+
+  test("Registro rejeita código de objeto duplicado", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Entrar como STC" }));
+    await user.click(screen.getByRole("button", { name: "Registro" }));
+    await user.click(screen.getByRole("button", { name: "Editar MT-0016" }));
+    const code = screen.getByLabelText("Código do objeto");
+    await user.clear(code);
+    await user.type(code, "mt-0015");
+    await user.click(screen.getByRole("button", { name: "Salvar objeto" }));
+
+    expect(screen.getByRole("alert").textContent).toContain("Já existe um objeto com esse código.");
+    expect(screen.getByText("MT-0016 · Estagiário")).toBeTruthy();
+  });
+
+  test("Registro edita a sigla da UG sem romper suas referências", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Entrar como STC" }));
+    await user.click(screen.getByRole("button", { name: "Registro" }));
+    await user.click(screen.getByRole("button", { name: "UGs" }));
+    await user.click(screen.getByRole("button", { name: "Editar SEDUC" }));
+    const acronym = screen.getByLabelText("Sigla da UG");
+    await user.clear(acronym);
+    await user.type(acronym, "saf");
+    await user.click(screen.getByRole("button", { name: "Salvar alterações" }));
+    expect(screen.getByRole("alert").textContent).toContain("Já existe uma UG com essa sigla.");
+
+    await user.clear(acronym);
+    await user.type(acronym, "SEDUC-NOVA");
+    await user.click(screen.getByRole("button", { name: "Salvar alterações" }));
+    await user.click(screen.getByRole("button", { name: "Painel STC" }));
+    const seducCycle = screen.getByText("Coleta MT-0016 - Estagiário").closest("article");
+    expect(seducCycle).toBeTruthy();
+    expect(within(seducCycle as HTMLElement).getByText("SEDUC-NOVA")).toBeTruthy();
+  });
+
+  test("Registro rejeita cadastro de UG com sigla ou identificador já ocupado", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Entrar como STC" }));
+    await user.click(screen.getByRole("button", { name: "Registro" }));
+    await user.click(screen.getByRole("button", { name: "UGs" }));
+    await user.click(screen.getByRole("button", { name: "Cadastrar UG" }));
+
+    await user.type(screen.getByLabelText("Sigla"), "SEDUC-");
+    await user.type(screen.getByLabelText("Nome"), "Secretaria duplicada");
+    await user.click(screen.getByRole("button", { name: "Continuar" }));
+    await user.type(screen.getByLabelText("Nome do ponto focal"), "Pessoa duplicada");
+    await user.type(screen.getByLabelText("E-mail do ponto focal"), "duplicada@seduc.ma.gov.br");
+    await user.click(screen.getByRole("button", { name: "Continuar" }));
+    await user.click(screen.getByRole("button", { name: "Enviar convite por e-mail (simulado)" }));
+
+    expect(screen.getByRole("alert").textContent).toContain("Já existe uma UG com essa sigla");
+    expect(screen.getAllByRole("button", { name: "Editar SEDUC" })).toHaveLength(1);
+  });
+
+  test("Registro mantém IDs distintos ao remover e readicionar campos com o mesmo rótulo", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Entrar como STC" }));
+    await user.click(screen.getByRole("button", { name: "Registro" }));
+    await user.click(screen.getByRole("button", { name: "Campos / informações" }));
+    await user.selectOptions(
+      screen.getByLabelText("Objeto"),
+      screen.getByRole("option", { name: /MT-0016/ }),
+    );
+
+    const fieldName = screen.getByPlaceholderText("Nome do campo (ex.: Valor empenhado)");
+    await user.type(fieldName, "Campo repetido");
+    await user.click(screen.getByRole("button", { name: "Adicionar campo" }));
+    await user.click(screen.getByRole("button", { name: "Remover campo Nome" }));
+    await user.type(fieldName, "Campo repetido");
+    await user.click(screen.getByRole("button", { name: "Adicionar campo" }));
+
+    expect(screen.getAllByText("Campo repetido")).toHaveLength(2);
+    const removeRepeated = screen.getAllByRole("button", { name: "Remover campo Campo repetido" });
+    expect(removeRepeated).toHaveLength(2);
+    await user.click(removeRepeated[0]);
+    expect(screen.getAllByText("Campo repetido")).toHaveLength(1);
+  });
+
+  test("login geral abre somente as coletas associadas ao usuário", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Entrar como respondente" }));
+    await user.type(
+      screen.getByLabelText("E-mail do respondente"),
+      "clara.nunes@sinfra.ma.gov.br",
+    );
+    await user.type(screen.getByLabelText("Senha do respondente"), "senha-simulada");
+    await user.click(screen.getByRole("button", { name: "Acessar minhas coletas" }));
+
+    expect(screen.getByRole("heading", { name: "Minhas coletas — Clara Nunes" })).toBeTruthy();
+    expect(screen.getByText(/MT-0018\s*·\s*Licitação/i)).toBeTruthy();
+    expect(screen.getByText(/MT-0012\s*·\s*Obra pública em execução/i)).toBeTruthy();
+    expect(screen.queryByText(/MT-0016.*Estagiário/i)).toBeNull();
+  });
+
+  test("Topbar abre a entrada geral do respondente sem sessão", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Entrar como STC" }));
+    await user.click(screen.getByRole("button", { name: "Respondente" }));
+
+    expect(
+      screen.getByRole("heading", { name: "Entrar nas minhas coletas" }),
+    ).toBeTruthy();
+  });
+
+  test("login geral rejeita credenciais desconhecidas", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Entrar como respondente" }));
+    await user.type(screen.getByLabelText("E-mail do respondente"), "nao.existe@ma.gov.br");
+    await user.type(screen.getByLabelText("Senha do respondente"), "senha-simulada");
+    await user.click(screen.getByRole("button", { name: "Acessar minhas coletas" }));
+
+    expect(screen.getByRole("alert").textContent).toBe(
+      "Cadastro não encontrado — confira o e-mail ou entre pelo link recebido no SEI.",
+    );
+  });
+
+  test("painel orienta quando nenhum filtro encontra coleta", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Entrar como STC" }));
+    const overdueFilter = screen.getByRole("button", { name: "Não enviado no prazo" });
+    await user.click(overdueFilter);
+    expect(overdueFilter.getAttribute("aria-pressed")).toBe("true");
+    await user.selectOptions(screen.getByLabelText("Objeto"), "MT-0016");
+
+    expect(screen.getByText("Nenhuma coleta combina com estes filtros")).toBeTruthy();
+  });
+
+  test("Histórico inclui as duas extremidades do período", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Entrar como STC" }));
+    await user.click(screen.getByRole("button", { name: "Histórico" }));
+    await user.type(screen.getByLabelText("Período inicial"), "2026-07-04");
+    await user.type(screen.getByLabelText("Período final"), "2026-07-04");
+
+    expect(screen.getByRole("heading", { name: "1 coleta(s) no filtro" })).toBeTruthy();
+    expect(screen.getByText("2026-07-04")).toBeTruthy();
+  });
+
+  test("Histórico orienta quando os filtros não encontram registros", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Entrar como STC" }));
+    await user.click(screen.getByRole("button", { name: "Histórico" }));
+    await user.type(
+      screen.getByPlaceholderText("objeto, título ou nº do SEI"),
+      "registro que não existe",
+    );
+
+    expect(
+      screen.getByText("Nenhum registro encontrado no período e filtros selecionados."),
+    ).toBeTruthy();
+  });
+
+  test("Registro orienta quando a lista de campos fica vazia", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Entrar como STC" }));
+    await user.click(screen.getByRole("button", { name: "Registro" }));
+    await user.click(screen.getByRole("button", { name: "Campos / informações" }));
+
+    const fieldCount = screen.getAllByRole("button", { name: /^Remover campo / }).length;
+    for (let index = 0; index < fieldCount; index += 1) {
+      await user.click(screen.getAllByRole("button", { name: /^Remover campo / })[0]);
+    }
+
+    expect(screen.getByText("Nenhum campo cadastrado para este objeto")).toBeTruthy();
+  });
+
+  test("clipboard ausente orienta a seleção da URL visível no card", async () => {
+    const user = userEvent.setup();
+    const restoreClipboard = replaceClipboard(undefined);
+
+    try {
+      render(<App />);
+      await user.click(screen.getByRole("button", { name: "Entrar como STC" }));
+      const copyButton = screen.getAllByRole("button", { name: /^Copiar link da coleta da / })[0];
+      expectSelectableUrlInCopyCard(copyButton);
+      await user.click(copyButton);
+
+      const feedback = await screen.findByRole("status");
+      expect(feedback.textContent).toBe(clipboardErrorMessage);
+      expect(feedback.classList.contains("error")).toBe(true);
+      expect(feedback.querySelector(".toast-icon.error")).toBeTruthy();
+    } finally {
+      restoreClipboard();
+    }
+  });
+
+  test("clipboard rejeitado orienta a seleção da URL visível no card", async () => {
+    const user = userEvent.setup();
+    const calls: string[] = [];
+    const restoreClipboard = replaceClipboard({
+      writeText: (value) => {
+        calls.push(value);
+        return Promise.reject(new Error("clipboard indisponível"));
+      },
+    });
+
+    try {
+      render(<App />);
+      await user.click(screen.getByRole("button", { name: "Entrar como STC" }));
+      const copyButton = screen.getAllByRole("button", { name: /^Copiar link da coleta da / })[0];
+      expectSelectableUrlInCopyCard(copyButton);
+      await user.click(copyButton);
+
+      const feedback = await screen.findByRole("status");
+      expect(calls).toEqual([firstCollectionUrl]);
+      expect(feedback.textContent).toBe(clipboardErrorMessage);
+      expect(feedback.classList.contains("error")).toBe(true);
+      expect(feedback.querySelector(".toast-icon.error")).toBeTruthy();
+    } finally {
+      restoreClipboard();
+    }
+  });
+
+  test("clipboard resolvido copia a URL exata uma única vez", async () => {
+    const user = userEvent.setup();
+    const calls: string[] = [];
+    const restoreClipboard = replaceClipboard({
+      writeText: (value) => {
+        calls.push(value);
+        return Promise.resolve();
+      },
+    });
+
+    try {
+      render(<App />);
+      await user.click(screen.getByRole("button", { name: "Entrar como STC" }));
+      await user.click(screen.getAllByRole("button", { name: /^Copiar link da coleta da / })[0]);
+
+      const feedback = await screen.findByRole("status");
+      expect(calls).toEqual([firstCollectionUrl]);
+      expect(feedback.textContent).toBe("Link copiado");
+      expect(feedback.classList.contains("error")).toBe(false);
+      expect(feedback.querySelector(".toast-icon.success")).toBeTruthy();
+    } finally {
+      restoreClipboard();
+    }
+  });
+
+  test("clipboard pendente só confirma depois que a promessa resolve", async () => {
+    const user = userEvent.setup();
+    const calls: string[] = [];
+    let resolveClipboard!: () => void;
+    const pendingClipboard = new Promise<void>((resolve) => {
+      resolveClipboard = resolve;
+    });
+    const restoreClipboard = replaceClipboard({
+      writeText: (value) => {
+        calls.push(value);
+        return pendingClipboard;
+      },
+    });
+
+    try {
+      render(<App />);
+      await user.click(screen.getByRole("button", { name: "Entrar como STC" }));
+      await user.click(screen.getAllByRole("button", { name: /^Copiar link da coleta da / })[0]);
+
+      expect(calls).toEqual([firstCollectionUrl]);
+      expect(screen.queryByText("Link copiado")).toBeNull();
+
+      await act(async () => {
+        resolveClipboard();
+        await pendingClipboard;
+      });
+
+      const feedback = await screen.findByRole("status");
+      expect(feedback.textContent).toBe("Link copiado");
+      expect(feedback.querySelector(".toast-icon.success")).toBeTruthy();
+    } finally {
+      restoreClipboard();
+    }
+  });
+});
+
+describe("máquina de estados", () => {
+  const cycle = {
+    id: "ciclo-teste",
+    deadline: "2099-01-01",
+    collectionIds: ["col-a", "col-b"],
+  } as CycleItem;
+
+  const collection = (
+    id: string,
+    status?: "aprovado" | "aguardando-ponto-focal" | "reaberto",
+  ) =>
+    ({
+      id,
+      cycleId: cycle.id,
+      submissions: status
+        ? [{ id: `sub-${id}`, status, isNegative: false, attachments: [], observations: [] }]
+        : [],
+    }) as unknown as Collection;
+
+  test("não finaliza enquanto uma UG continua sem resposta", () => {
+    expect(deriveCycleStatus(cycle, [collection("col-a", "aprovado"), collection("col-b")])).toBe(
+      "aguardando-analise-stc",
+    );
+  });
+
+  test("não finaliza se uma coleta esperada estiver ausente do estado recebido", () => {
+    expect(deriveCycleStatus(cycle, [collection("col-a", "aprovado")])).toBe(
+      "aguardando-analise-stc",
+    );
+  });
+
+  test("expõe o gate do focal no ciclo", () => {
+    expect(
+      deriveCycleStatus(cycle, [collection("col-a", "aguardando-ponto-focal"), collection("col-b")]),
+    ).toBe("aguardando-ponto-focal");
+  });
+
+  test("correção prevalece sobre o gate do ponto focal", () => {
+    expect(
+      deriveCycleStatus(cycle, [
+        collection("col-a", "aguardando-ponto-focal"),
+        collection("col-b", "reaberto"),
+      ]),
+    ).toBe("correcao");
+  });
+
+  test("finaliza quando todas as coletas estão aprovadas", () => {
+    expect(
+      deriveCycleStatus(cycle, [
+        collection("col-a", "aprovado"),
+        collection("col-b", "aprovado"),
+      ]),
+    ).toBe("finalizado");
+  });
+
+  test("marca prazo vencido quando nenhuma coleta foi enviada", () => {
+    const overdueCycle = { ...cycle, deadline: "2000-01-01" } as CycleItem;
+    expect(
+      deriveCycleStatus(overdueCycle, [collection("col-a"), collection("col-b")]),
+    ).toBe("nao-enviado-no-prazo");
+  });
+
+  test("reenvio e negativa respeitam o focal", () => {
+    expect(statusAfterRespondentSend(true, false)).toBe("aguardando-ponto-focal");
+    expect(statusAfterRespondentSend(true, true)).toBe("aguardando-ponto-focal");
+    expect(statusAfterFocal(true)).toBe("resposta-negativa");
+    expect(statusAfterFocal(false)).toBe("enviado");
+  });
+});
+
+describe("comprovantes", () => {
+  test("gera eventos distintos preservando o protocolo-base", () => {
+    const envio = createReceipt(
+      "envio",
+      "AG-2026-00001",
+      "João",
+      "13 jul. 2026",
+      0,
+      "Resposta enviada",
+    );
+    const rejeicao = createReceipt(
+      "rejeicao",
+      "AG-2026-00001",
+      "Equipe STC",
+      "14 jul. 2026",
+      1,
+      "Correção solicitada",
+    );
+    const fechamento = createReceipt(
+      "fechamento",
+      "AG-2026-00001",
+      "Equipe STC",
+      "15 jul. 2026",
+      2,
+      "Resposta aprovada",
+    );
+
+    expect([envio.kind, rejeicao.kind, fechamento.kind]).toEqual([
+      "envio",
+      "rejeicao",
+      "fechamento",
+    ]);
+    expect(new Set([envio.id, rejeicao.id, fechamento.id]).size).toBe(3);
+    expect(fechamento.protocol).toBe("AG-2026-00001");
+  });
+
+  test("respondente consulta a rejeição enquanto corrige o envio", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Abrir link da coleta (SEI)" }));
+    await user.type(
+      screen.getByPlaceholderText("ex.: joao.lima@seduc.ma.gov.br"),
+      "paulo.sena@sefaz.ma.gov.br",
+    );
+    await user.type(screen.getByLabelText("Senha"), "senha-teste");
+    await user.click(screen.getByRole("button", { name: "Entrar" }));
+
+    expect(screen.getByText(/MT-0016\s*·\s*SEDUC\s*·\s*Objeto fixo/i)).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Estagiário" })).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: "Voltar ao painel" }));
+    expect(screen.getByText(/MT-0016\s*·\s*Estagiário/i)).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Corrigir envio" }));
+    await user.click(screen.getByRole("button", { name: /Comprovante/ }));
+
+    expect(screen.getByText("Comprovante de rejeição")).toBeTruthy();
+    expect(screen.getAllByText("AG-2026-00019")).toHaveLength(2);
+  });
+
+  test("preserva envio, rejeição, reenvio e fechamento na mesma timeline", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    const claraSubmissionCard = () =>
+      screen.getAllByText("Clara Nunes")[0].closest(".submission-card");
+
+    await user.click(screen.getByRole("button", { name: "Entrar como STC" }));
+    let cycleCard = screen.getByText("Coleta MT-0018 - Licitação").closest("article");
+    expect(cycleCard).toBeTruthy();
+    await user.click(
+      within(cycleCard as HTMLElement).getByRole("button", { name: "Validar respostas" }),
+    );
+
+    let claraCard = claraSubmissionCard();
+    expect(claraCard).toBeTruthy();
+    const rejectionReason = within(claraCard as HTMLElement).getByLabelText(
+      "Justificativa da rejeicao",
+    );
+    await user.type(rejectionReason, "Corrigir o período informado.");
+    await user.click(
+      within(claraCard as HTMLElement).getByRole("button", { name: "Rejeitar envio" }),
+    );
+
+    claraCard = claraSubmissionCard();
+    expect(claraCard).toBeTruthy();
+    let timeline = within(claraCard as HTMLElement).getByLabelText(
+      "Histórico de comprovantes",
+    );
+    expect(within(timeline).getAllByText("Comprovante de envio")).toHaveLength(1);
+    expect(within(timeline).getAllByText("Comprovante de rejeição")).toHaveLength(1);
+    expect(within(timeline).getByText("2 evento(s) registrado(s)")).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: "Respondente" }));
+    await user.type(
+      screen.getByLabelText("E-mail do respondente"),
+      "clara.nunes@sinfra.ma.gov.br",
+    );
+    await user.type(screen.getByLabelText("Senha do respondente"), "senha-simulada");
+    await user.click(screen.getByRole("button", { name: "Acessar minhas coletas" }));
+    await user.click(screen.getByRole("button", { name: "Corrigir envio" }));
+    await user.click(screen.getByRole("button", { name: "Reenviar corrigido" }));
+
+    timeline = screen.getByLabelText("Histórico de comprovantes");
+    expect(within(timeline).getAllByText("Comprovante de envio")).toHaveLength(2);
+    expect(within(timeline).getAllByText("Comprovante de rejeição")).toHaveLength(1);
+    expect(within(timeline).getByText("3 evento(s) registrado(s)")).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: "STC" }));
+    cycleCard = screen.getByText("Coleta MT-0018 - Licitação").closest("article");
+    expect(cycleCard).toBeTruthy();
+    await user.click(
+      within(cycleCard as HTMLElement).getByRole("button", { name: "Validar respostas" }),
+    );
+    claraCard = claraSubmissionCard();
+    expect(claraCard).toBeTruthy();
+    await user.click(
+      within(claraCard as HTMLElement).getByRole("button", { name: "Aprovar resposta" }),
+    );
+
+    claraCard = claraSubmissionCard();
+    expect(claraCard).toBeTruthy();
+    timeline = within(claraCard as HTMLElement).getByLabelText(
+      "Histórico de comprovantes",
+    );
+    expect(within(timeline).getAllByText("Comprovante de envio")).toHaveLength(2);
+    expect(within(timeline).getAllByText("Comprovante de rejeição")).toHaveLength(1);
+    expect(within(timeline).getAllByText("Comprovante de fechamento")).toHaveLength(1);
+    expect(within(timeline).getAllByText("AG-2026-00032")).toHaveLength(4);
+    expect(
+      within(timeline)
+        .getAllByRole("listitem")
+        .map((item) => within(item).getByText(/^Comprovante de /).textContent),
+    ).toEqual([
+      "Comprovante de envio",
+      "Comprovante de rejeição",
+      "Comprovante de envio",
+      "Comprovante de fechamento",
+    ]);
+
+    await user.click(screen.getByRole("button", { name: "Respondente" }));
+    const collectionCard = screen
+      .getByText(/MT-0018\s*·\s*Licitação/i)
+      .closest("article");
+    expect(collectionCard).toBeTruthy();
+    await user.click(
+      within(collectionCard as HTMLElement).getByRole("button", { name: "Ver comprovante" }),
+    );
+
+    expect(screen.getByText("Resposta aprovada pela STC")).toBeTruthy();
+    timeline = screen.getByLabelText("Histórico de comprovantes");
+    expect(within(timeline).getAllByText("Comprovante de envio")).toHaveLength(2);
+    expect(within(timeline).getAllByText("Comprovante de rejeição")).toHaveLength(1);
+    expect(within(timeline).getAllByText("Comprovante de fechamento")).toHaveLength(1);
+  }, 15000);
+});

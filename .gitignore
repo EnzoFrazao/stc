@@ -62,3 +62,4 @@ pnpm-debug.log*
 docs/
 screenshots/
 .claude/
+.superpowers/
