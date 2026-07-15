@@ -1,10 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
-import { tesauroObjects } from "./tesauroData";
+import { tesauroAttachments, tesauroFields, tesauroObjects } from "./tesauroData";
 
-type Role = "login" | "ponto-focal" | "respondente" | "stc";
+type StcRole = "stc-analista" | "stc-especialista";
+type Role = "login" | "ponto-focal" | "respondente" | StcRole;
 type View =
+  | "stc-home"
   | "stc-dashboard"
   | "stc-create"
+  | "stc-creation-review"
   | "stc-cycle-detail"
   | "stc-validation"
   | "stc-history"
@@ -16,6 +19,8 @@ type View =
   | "resp-dashboard"
   | "resp-collection";
 type ObjectKind = "fixo" | "variavel";
+type SpreadsheetStatus = "pending-approval" | "fixed-template-pending" | "generated";
+type CreationReviewStatus = "aguardando-analise" | "ajustes-solicitados" | "aprovado";
 export type SubmissionStatus =
   | "pendente"
   | "rascunho"
@@ -34,6 +39,10 @@ export type CycleStatus =
 type Tone = "info" | "success" | "warning" | "danger" | "neutral" | "orange";
 type StepState = "done" | "active" | "todo";
 type StepDefinition = [string, StepState];
+
+function isStcRole(role: Role): role is StcRole {
+  return role === "stc-analista" || role === "stc-especialista";
+}
 
 interface FieldDefinition {
   id: string;
@@ -54,8 +63,17 @@ interface TransparencyObject {
   description: string;
   scopeNote?: string;
   collectionSource?: string;
+  kind?: ObjectKind;
   suggestedUgs: readonly string[];
+  attachmentIds?: readonly string[];
+  fieldIds?: readonly string[];
+  requiredFieldIds?: readonly string[];
   fields: readonly FieldDefinition[];
+}
+
+interface AttachmentDefinition {
+  id: string;
+  label: string;
 }
 
 interface Ug {
@@ -140,6 +158,15 @@ interface Respondent {
   collectionIds: string[]; // coletas em que foi adicionado ou às quais chegou pelo link (§3.3)
 }
 
+interface CycleReviewEvent {
+  id: string;
+  type: "enviado" | "alterado" | "ajustes-solicitados" | "reenviado" | "aprovado";
+  author: string;
+  date: string;
+  message: string;
+  changes: string[];
+}
+
 export interface CycleItem {
   id: string;
   title: string;
@@ -147,6 +174,7 @@ export interface CycleItem {
   objectName: string;
   objectKind: ObjectKind;
   createdAt: string;
+  createdAtIso: string;
   deadline: string;
   status: CycleStatus;
   seiNumber: string;
@@ -155,6 +183,14 @@ export interface CycleItem {
   collectionIds: string[];
   requiresFocalPointValidation: boolean; // toggle P2
   requiredAttachments: string[];
+  metadataIds: string[];
+  creationStatus: CreationReviewStatus;
+  creationObservations: string;
+  notificationChannel: string;
+  lastUpdatedAt: string;
+  lastUpdatedBy: string;
+  reviewHistory: CycleReviewEvent[];
+  spreadsheetStatus: SpreadsheetStatus;
 }
 
 interface CycleDraft {
@@ -162,10 +198,27 @@ interface CycleDraft {
   deadline: string;
   seiNumber: string;
   observations: string;
-  notificationChannel: "Email";
+  notificationChannel: string;
   kind: ObjectKind;
+  variableObjectCode: string;
+  variableObjectName: string;
   requiredAttachments: string[];
   requiresFocalPointValidation: boolean;
+}
+
+interface CycleReviewDraft {
+  title: string;
+  objectCode: string;
+  objectName: string;
+  objectKind: ObjectKind;
+  deadline: string;
+  seiNumber: string;
+  ugIds: string[];
+  metadataIds: string[];
+  requiredAttachments: string[];
+  requiresFocalPointValidation: boolean;
+  creationObservations: string;
+  notificationChannel: string;
 }
 
 interface CycleFilters {
@@ -184,6 +237,31 @@ interface HistoryFilters extends CycleFilters {
 }
 
 const transparencyObjects = tesauroObjects as readonly TransparencyObject[];
+const canonicalFields = tesauroFields as readonly FieldDefinition[];
+const attachmentCatalog = tesauroAttachments as readonly AttachmentDefinition[];
+
+function requiredAttachmentsForObject(object: TransparencyObject): string[] {
+  const attachmentIds = new Set(object.attachmentIds ?? []);
+  return attachmentCatalog
+    .filter((attachment) => attachmentIds.has(attachment.id))
+    .map((attachment) => attachment.label);
+}
+
+function requiredFieldIdsForObject(
+  object: TransparencyObject,
+  availableFields: readonly FieldDefinition[] = object.fields,
+): string[] {
+  const availableIds = new Set(availableFields.map((field) => field.id));
+  const sourceFieldIds = new Set(object.fieldIds ?? object.fields.map((field) => field.id));
+  const requiredIds = object.requiredFieldIds ?? object.fieldIds ?? object.fields.map((field) => field.id);
+  const registryAddedIds = availableFields
+    .filter((field) => !sourceFieldIds.has(field.id))
+    .map((field) => field.id);
+
+  return Array.from(
+    new Set([...requiredIds.filter((fieldId) => availableIds.has(fieldId)), ...registryAddedIds]),
+  );
+}
 
 function objectByCode(code: string): TransparencyObject {
   return transparencyObjects.find((item) => item.code === code) ?? transparencyObjects[0];
@@ -192,18 +270,10 @@ function objectByCode(code: string): TransparencyObject {
 // Piloto do MVP: MT-0016 (Estagiário) — objeto FIXO, tabular, mensal (§2 da TAREFA).
 const defaultObject = objectByCode("MT-0016");
 
-// O objeto FIXO também tem anexos obrigatórios: eles já vêm definidos no REGISTRO do objeto
-// (a STC pode ajustar na criação); no variável a STC digita os títulos (TAREFA_UI §0.2).
-const fixedObjectAttachments: Record<string, string[]> = {
-  "MT-0016": [
-    "Termo de compromisso do estágio",
-    "Relatório de frequência",
-    "Comprovante do seguro contra acidentes",
-  ],
-};
-
-function kindFromFormat(format: string): ObjectKind {
-  return format.toUpperCase().includes("FIXO") ? "fixo" : "variavel";
+// Todo objeto persistido no Tesauro ou no Registro é fixo. Objetos variáveis existem apenas
+// dentro do ciclo e, por isso, nunca são inferidos pelo texto livre do formato.
+function kindFromFormat(_format: string): ObjectKind {
+  return "fixo";
 }
 
 const seedUgs: Ug[] = [
@@ -271,7 +341,7 @@ const seedRespondents: Respondent[] = [
     ugId: "seduc",
     createdBySelf: false,
     emailVerified: true,
-    collectionIds: ["col-100-seduc"],
+    collectionIds: ["col-100-seduc", "col-demo-variable-seduc"],
   },
   {
     id: "resp-clara",
@@ -314,7 +384,7 @@ const objectMt0012 = objectByCode("MT-0012");
 const objectMt0040 = objectByCode("MT-0040");
 const objectMt0015 = objectByCode("MT-0015");
 
-const seedCycles: CycleItem[] = [
+const seedCycles: CycleItem[] = ([
   {
     id: "ciclo-100",
     title: `Coleta ${defaultObject.code} - ${titleCase(defaultObject.name)}`,
@@ -329,14 +399,14 @@ const seedCycles: CycleItem[] = [
     metadataLabels: defaultObject.fields.map((field) => field.label),
     collectionIds: ["col-100-seduc", "col-100-saf"],
     requiresFocalPointValidation: true,
-    requiredAttachments: [...fixedObjectAttachments[defaultObject.code]],
+    requiredAttachments: [],
   },
   {
     id: "ciclo-101",
     title: `Coleta ${objectMt0018.code} - ${titleCase(objectMt0018.name)}`,
     objectCode: objectMt0018.code,
     objectName: titleCase(objectMt0018.name),
-    objectKind: "variavel",
+    objectKind: "fixo",
     createdAt: "04 jul. 2026",
     deadline: "2026-07-18",
     status: "aguardando-analise-stc",
@@ -348,11 +418,27 @@ const seedCycles: CycleItem[] = [
     requiredAttachments: ["Edital em PDF", "Publicação do aviso"],
   },
   {
+    id: "ciclo-demo-variable",
+    title: "Coleta VAR-0000 - Demonstração variável",
+    objectCode: "VAR-0000",
+    objectName: "Demonstração variável",
+    objectKind: "variavel",
+    createdAt: "06 jul. 2026",
+    deadline: "2026-07-20",
+    status: "ativo",
+    seiNumber: "2026.000400/STC",
+    ugIds: ["seduc"],
+    metadataLabels: [canonicalFields[0].label],
+    collectionIds: ["col-demo-variable-seduc"],
+    requiresFocalPointValidation: false,
+    requiredAttachments: [],
+  },
+  {
     id: "ciclo-102",
     title: `Coleta ${objectMt0030.code} - ${titleCase(objectMt0030.name)}`,
     objectCode: objectMt0030.code,
     objectName: titleCase(objectMt0030.name),
-    objectKind: "variavel",
+    objectKind: "fixo",
     createdAt: "28 jun. 2026",
     deadline: "2026-07-04",
     status: "correcao",
@@ -368,7 +454,7 @@ const seedCycles: CycleItem[] = [
     title: `Coleta ${objectMt0012.code} - ${titleCase(objectMt0012.name)}`,
     objectCode: objectMt0012.code,
     objectName: titleCase(objectMt0012.name),
-    objectKind: "variavel",
+    objectKind: "fixo",
     createdAt: "12 jun. 2026",
     deadline: "2026-06-28",
     status: "finalizado",
@@ -384,7 +470,7 @@ const seedCycles: CycleItem[] = [
     title: `Coleta ${objectMt0040.code} - ${titleCase(objectMt0040.name)}`,
     objectCode: objectMt0040.code,
     objectName: titleCase(objectMt0040.name),
-    objectKind: "variavel",
+    objectKind: "fixo",
     createdAt: "26 jun. 2026",
     deadline: "2026-07-08",
     status: "aguardando-analise-stc",
@@ -411,7 +497,41 @@ const seedCycles: CycleItem[] = [
     requiresFocalPointValidation: false,
     requiredAttachments: [],
   },
-];
+] as Array<
+  Omit<
+    CycleItem,
+    | "metadataIds"
+    | "creationStatus"
+    | "creationObservations"
+    | "notificationChannel"
+    | "lastUpdatedAt"
+    | "lastUpdatedBy"
+    | "reviewHistory"
+    | "createdAtIso"
+    | "spreadsheetStatus"
+  >
+>).map((cycle) => ({
+  ...cycle,
+  metadataIds: (cycle.objectKind === "variavel" ? canonicalFields : objectByCode(cycle.objectCode).fields)
+    .filter((field) => cycle.metadataLabels.includes(field.label))
+    .map((field) => field.id),
+  creationStatus: "aprovado",
+  creationObservations: "",
+  notificationChannel: "Email",
+  lastUpdatedAt: cycle.createdAt,
+  lastUpdatedBy: "Equipe STC",
+  reviewHistory: [],
+  createdAtIso: {
+    "ciclo-100": "2026-07-07T12:00:00.000Z",
+    "ciclo-101": "2026-07-04T12:00:00.000Z",
+    "ciclo-demo-variable": "2026-07-06T12:00:00.000Z",
+    "ciclo-102": "2026-06-28T12:00:00.000Z",
+    "ciclo-103": "2026-06-12T12:00:00.000Z",
+    "ciclo-104": "2026-06-26T12:00:00.000Z",
+    "ciclo-105": "2026-06-16T12:00:00.000Z",
+  }[cycle.id] ?? "2026-01-01T12:00:00.000Z",
+  spreadsheetStatus: cycle.objectKind === "variavel" ? "generated" : "fixed-template-pending",
+}));
 
 const seedCollections: Collection[] = [
   {
@@ -422,7 +542,7 @@ const seedCollections: Collection[] = [
     kind: "fixo",
     ugId: "seduc",
     linkToken: "agz-100-seduc",
-    requiredAttachments: [...fixedObjectAttachments[defaultObject.code]],
+    requiredAttachments: [],
     attachmentJustifications: [],
     submissions: [],
   },
@@ -434,7 +554,19 @@ const seedCollections: Collection[] = [
     kind: "fixo",
     ugId: "saf",
     linkToken: "agz-100-saf",
-    requiredAttachments: [...fixedObjectAttachments[defaultObject.code]],
+    requiredAttachments: [],
+    attachmentJustifications: [],
+    submissions: [],
+  },
+  {
+    id: "col-demo-variable-seduc",
+    cycleId: "ciclo-demo-variable",
+    objectCode: "VAR-0000",
+    objectName: "Demonstração variável",
+    kind: "variavel",
+    ugId: "seduc",
+    linkToken: "agz-demo-variable-seduc",
+    requiredAttachments: [],
     attachmentJustifications: [],
     submissions: [],
   },
@@ -443,7 +575,7 @@ const seedCollections: Collection[] = [
     cycleId: "ciclo-101",
     objectCode: objectMt0018.code,
     objectName: titleCase(objectMt0018.name),
-    kind: "variavel",
+    kind: "fixo",
     ugId: "sinfra",
     linkToken: "agz-101-sinfra",
     requiredAttachments: ["Edital em PDF", "Publicação do aviso"],
@@ -516,7 +648,7 @@ const seedCollections: Collection[] = [
     cycleId: "ciclo-102",
     objectCode: objectMt0030.code,
     objectName: titleCase(objectMt0030.name),
-    kind: "variavel",
+    kind: "fixo",
     ugId: "sefaz",
     linkToken: "agz-102-sefaz",
     requiredAttachments: ["Relatório consolidado em PDF"],
@@ -572,7 +704,7 @@ const seedCollections: Collection[] = [
     cycleId: "ciclo-103",
     objectCode: objectMt0012.code,
     objectName: titleCase(objectMt0012.name),
-    kind: "variavel",
+    kind: "fixo",
     ugId: "sinfra",
     linkToken: "agz-103-sinfra",
     requiredAttachments: ["Relatório fotográfico"],
@@ -633,7 +765,7 @@ const seedCollections: Collection[] = [
     cycleId: "ciclo-104",
     objectCode: objectMt0040.code,
     objectName: titleCase(objectMt0040.name),
-    kind: "variavel",
+    kind: "fixo",
     ugId: "sefaz",
     linkToken: "agz-104-sefaz",
     requiredAttachments: [],
@@ -724,25 +856,41 @@ function deadlineContext(deadline: string): string {
   return `venceu há ${Math.abs(diff)} dias`;
 }
 
-// Anexos do fixo v\u00eam do registro do objeto; do vari\u00e1vel, a STC digita na cria\u00e7\u00e3o.
-function attachmentsForKind(kind: ObjectKind, objectCode: string): string[] {
-  return kind === "fixo" ? [...(fixedObjectAttachments[objectCode] ?? [])] : [];
-}
-
 function draftForObject(object: TransparencyObject): CycleDraft {
-  const kind = kindFromFormat(object.format);
   return {
-    title: `Coleta ${object.code} - ${titleCase(object.name)}`,
+    title: `Ciclo ${object.code} - ${titleCase(object.name)}`,
     // TODO(P-009): prazos-padrão e datas fixas por objeto ainda em aberto; campo livre.
     deadline: "2026-07-25",
     seiNumber: "2026.000452/STC",
     observations:
       "Pedido formal registrado no SEI. O link da coleta segue anexado ao processo; a resposta deve ser enviada pela plataforma até o prazo indicado.",
     notificationChannel: "Email",
-    kind,
-    requiredAttachments: attachmentsForKind(kind, object.code),
+    kind: "fixo",
+    variableObjectCode: "",
+    variableObjectName: "",
+    requiredAttachments: requiredAttachmentsForObject(object),
     requiresFocalPointValidation: false,
   };
+}
+
+function draftForVariable(code: string): CycleDraft {
+  return {
+    ...draftForObject(defaultObject),
+    title: "",
+    kind: "variavel",
+    variableObjectCode: code,
+    variableObjectName: "",
+    requiredAttachments: [],
+  };
+}
+
+function nextVariableCode(cycles: CycleItem[]): string {
+  const nextNumber =
+    cycles.reduce((highest, cycle) => {
+      const match = /^VAR-(\d{4})$/.exec(cycle.objectCode);
+      return match ? Math.max(highest, Number(match[1])) : highest;
+    }, 0) + 1;
+  return `VAR-${String(nextNumber).padStart(4, "0")}`;
 }
 
 export function statusAfterRespondentSend(requiresFocal: boolean, isNegative: boolean): SubmissionStatus {
@@ -1147,6 +1295,58 @@ function kindLabel(kind: ObjectKind): string {
   return kind === "fixo" ? "Objeto fixo" : "Objeto variável";
 }
 
+const creationStatusLabels: Record<CreationReviewStatus, string> = {
+  "aguardando-analise": "Aguardando análise da criação",
+  "ajustes-solicitados": "Ajustes solicitados",
+  aprovado: "Aprovado",
+};
+
+function reviewDraftFromCycle(cycle: CycleItem): CycleReviewDraft {
+  return {
+    title: cycle.title,
+    objectCode: cycle.objectCode,
+    objectName: cycle.objectName,
+    objectKind: cycle.objectKind,
+    deadline: cycle.deadline,
+    seiNumber: cycle.seiNumber,
+    ugIds: [...cycle.ugIds],
+    metadataIds: [...cycle.metadataIds],
+    requiredAttachments: [...cycle.requiredAttachments],
+    requiresFocalPointValidation: cycle.requiresFocalPointValidation,
+    creationObservations: cycle.creationObservations,
+    notificationChannel: cycle.notificationChannel,
+  };
+}
+
+function describeReviewChanges(cycle: CycleItem, draft: CycleReviewDraft): string[] {
+  const changes: string[] = [];
+  if (cycle.title !== draft.title) changes.push(`Título: "${cycle.title}" → "${draft.title}"`);
+  if (cycle.objectCode !== draft.objectCode)
+    changes.push(`Objeto: "${cycle.objectCode}" → "${draft.objectCode}"`);
+  if (cycle.deadline !== draft.deadline) changes.push(`Prazo: "${cycle.deadline}" → "${draft.deadline}"`);
+  if (cycle.seiNumber !== draft.seiNumber)
+    changes.push(`Número SEI: "${cycle.seiNumber || "não informado"}" → "${draft.seiNumber || "não informado"}"`);
+  if (cycle.ugIds.join("|") !== draft.ugIds.join("|"))
+    changes.push(`UGs: "${cycle.ugIds.join(", ")}" → "${draft.ugIds.join(", ")}"`);
+  if (cycle.metadataIds.join("|") !== draft.metadataIds.join("|"))
+    changes.push(
+      `Campos obrigatórios: "${cycle.metadataIds.join(", ") || "nenhum"}" → "${draft.metadataIds.join(", ") || "nenhum"}"`,
+    );
+  if (cycle.requiredAttachments.join("|") !== draft.requiredAttachments.join("|"))
+    changes.push(
+      `Anexos obrigatórios: "${cycle.requiredAttachments.join(", ") || "nenhum"}" → "${draft.requiredAttachments.join(", ") || "nenhum"}"`,
+    );
+  if (cycle.requiresFocalPointValidation !== draft.requiresFocalPointValidation)
+    changes.push(
+      `Validação do ponto focal: ${cycle.requiresFocalPointValidation ? "Sim" : "Não"} → ${draft.requiresFocalPointValidation ? "Sim" : "Não"}`,
+    );
+  if (cycle.notificationChannel !== draft.notificationChannel)
+    changes.push(`Canal: "${cycle.notificationChannel}" → "${draft.notificationChannel}"`);
+  if (cycle.creationObservations !== draft.creationObservations)
+    changes.push(`Observações: "${cycle.creationObservations}" → "${draft.creationObservations}"`);
+  return changes;
+}
+
 function TopBar({
   role,
   setRole,
@@ -1158,7 +1358,14 @@ function TopBar({
   respondentInitial: string;
   onProfileClick: () => void;
 }) {
-  const avatar = role === "ponto-focal" ? "M" : role === "respondente" ? respondentInitial : "E";
+  const avatar =
+    role === "ponto-focal"
+      ? "M"
+      : role === "respondente"
+        ? respondentInitial
+        : role === "stc-analista"
+          ? "A"
+          : "E";
   return (
     <header className="topbar">
       <div className="brand-lockup">
@@ -1190,10 +1397,17 @@ function TopBar({
           </button>
           <button
             type="button"
-            className={role === "stc" ? "active" : ""}
-            onClick={() => setRole("stc")}
+            className={role === "stc-analista" ? "active" : ""}
+            onClick={() => setRole("stc-analista")}
           >
-            STC
+            Analista STC
+          </button>
+          <button
+            type="button"
+            className={role === "stc-especialista" ? "active" : ""}
+            onClick={() => setRole("stc-especialista")}
+          >
+            Especialista STC
           </button>
         </div>
         {role !== "login" ? (
@@ -1231,7 +1445,9 @@ function ProfileDrawer({
             name: respondent?.name ?? "Acesso pelo link",
             detail: respondent ? respondent.role : "Cadastro ainda não concluído",
           }
-        : { avatar: "E", name: "Equipe STC", detail: "Coleta e validação" };
+        : role === "stc-analista"
+          ? { avatar: "A", name: "Analista STC", detail: "Criação e acompanhamento de ciclos" }
+          : { avatar: "E", name: "Especialista STC", detail: "Aprovação e acompanhamento" };
 
   return (
     <div className="profile-drawer-layer" aria-live="polite">
@@ -1299,7 +1515,7 @@ function ProfileDrawer({
           </>
         ) : null}
 
-        {role === "stc" ? (
+        {isStcRole(role) ? (
           <>
             <div className="drawer-section">
               <span>Unidade</span>
@@ -1308,8 +1524,16 @@ function ProfileDrawer({
             </div>
             <div className="drawer-section">
               <span>Função</span>
-              <strong>Cria coletas e verifica conteúdo</strong>
-              <p>Define objeto, campos, anexos obrigatórios e o toggle de validação do ponto focal.</p>
+              <strong>
+                {role === "stc-analista"
+                  ? "Cria e configura ciclos"
+                  : "Analisa e aprova a criação dos ciclos"}
+              </strong>
+              <p>
+                {role === "stc-analista"
+                  ? "Define objeto, campos, anexos obrigatórios e o toggle de validação do ponto focal."
+                  : "Confere UGs, campos, anexos e configurações antes do envio às unidades gestoras."}
+              </p>
             </div>
             <div className="drawer-section">
               <span>Escopo operacional</span>
@@ -1332,32 +1556,41 @@ function Sidebar({
   view: View;
   setView: (view: View) => void;
 }) {
-  if (role !== "stc") return null;
+  if (!isStcRole(role)) return null;
 
   const items: Array<{ id: View; label: string; icon: Parameters<typeof Icon>[0]["name"] }> = [
-    { id: "stc-dashboard", label: "Painel STC", icon: "home" },
-    { id: "stc-create", label: "Criar coleta", icon: "filter" },
+    { id: "stc-home", label: "Painel STC", icon: "home" },
     { id: "stc-history", label: "Histórico", icon: "clock" },
     { id: "stc-registry", label: "Registro", icon: "users" },
+  ];
+  const operationalViews: View[] = [
+    "stc-home",
+    "stc-create",
+    "stc-creation-review",
+    "stc-dashboard",
+    "stc-cycle-detail",
+    "stc-validation",
   ];
 
   return (
     <aside className="sidebar">
       <div className="sidebar-card">
         <span>Visão atual</span>
-        <strong>Equipe STC</strong>
-        <small>Coleta e validação</small>
+        <strong>{role === "stc-analista" ? "Analista STC" : "Especialista STC"}</strong>
+        <small>
+          {role === "stc-analista" ? "Criação e acompanhamento" : "Aprovação e acompanhamento"}
+        </small>
       </div>
-      <nav>
+      <nav aria-label="Navegação STC">
         {items.map((item) => {
           const active =
-            view === item.id ||
-            (item.id === "stc-dashboard" && (view === "stc-cycle-detail" || view === "stc-validation"));
+            view === item.id || (item.id === "stc-home" && operationalViews.includes(view));
           return (
             <button
               key={item.id}
               type="button"
               className={active ? "active" : ""}
+              aria-current={active ? "page" : undefined}
               onClick={() => setView(item.id)}
             >
               <Icon name={item.icon} size={16} />
@@ -1405,9 +1638,13 @@ function LoginScreen({
             <Icon name="lock" />
             Entrar como respondente
           </button>
-          <button type="button" className="secondary-button" onClick={() => enter("stc")}>
-            <Icon name="shield" />
-            Entrar como STC
+          <button type="button" className="secondary-button" onClick={() => enter("stc-analista")}>
+            <Icon name="edit" />
+            Entrar como Analista STC
+          </button>
+          <button type="button" className="secondary-button" onClick={() => enter("stc-especialista")}>
+            <Icon name="clipboard" />
+            Entrar como Especialista STC
           </button>
           <button type="button" className="secondary-button" onClick={openPilotLink}>
             <Icon name="link" />
@@ -1445,7 +1682,7 @@ function LoginScreen({
         </div>
         <div className="preview-card compact">
           <strong>Fixo × variável</strong>
-          <span>planilha pronta do Tesauro ou gerada dos campos escolhidos</span>
+          <span>modelo fixo vinculado por código ou planilha variável gerada dos campos escolhidos</span>
         </div>
         <div className="preview-card compact dark">
           <strong>Estados próprios</strong>
@@ -1692,23 +1929,81 @@ function CycleTimeline({ cycle, submissions }: { cycle: CycleItem; submissions: 
   );
 }
 
+function StcHome({ role, setView }: { role: StcRole; setView: (view: View) => void }) {
+  const primaryAction =
+    role === "stc-analista"
+      ? {
+          title: "Criar Ciclo",
+          description: "Configure objeto, UGs, campos e anexos antes de enviar para análise.",
+          icon: "edit" as const,
+          view: "stc-create" as const,
+        }
+      : {
+          title: "Aprovar Ciclo",
+          description: "Confira, ajuste e aprove os ciclos preparados pelos analistas.",
+          icon: "clipboard" as const,
+          view: "stc-creation-review" as const,
+        };
+  const actions = [
+    primaryAction,
+    {
+      title: "Acompanhar ciclos",
+      description: "Veja todos os ciclos e acompanhe o andamento das coletas por UG.",
+      icon: "eye" as const,
+      view: "stc-dashboard" as const,
+    },
+  ];
+
+  return (
+    <div className="workflow-page wide-page stc-home-page">
+      <SectionHeader
+        eyebrow={role === "stc-analista" ? "Analista STC" : "Especialista STC"}
+        title="Painel STC"
+        description="Escolha uma área para continuar. Histórico e Registro permanecem disponíveis no menu lateral."
+      />
+
+      <div className="stc-home-actions" aria-label="Ações do perfil STC">
+        {actions.map((action) => (
+          <button
+            key={action.title}
+            type="button"
+            className="card stc-home-action"
+            onClick={() => setView(action.view)}
+          >
+            <span className="stc-home-action-icon">
+              <Icon name={action.icon} size={30} />
+            </span>
+            <span className="stc-home-action-copy">
+              <strong>{action.title}</strong>
+              <span>{action.description}</span>
+            </span>
+            <Icon name="arrow" size={20} />
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function StcDashboard({
+  role,
   cycles,
   collections,
   ugList,
   copyLink,
   openDetail,
   openValidation,
-  openCreate,
+  openCreation,
   updateSei,
 }: {
+  role: StcRole;
   cycles: CycleItem[];
   collections: Collection[];
   ugList: Ug[];
   copyLink: (collection: Collection) => Promise<void>;
   openDetail: (cycleId: string) => void;
   openValidation: (cycleId: string) => void;
-  openCreate: () => void;
+  openCreation: (cycleId: string) => void;
   updateSei: (cycleId: string, value: string) => void;
 }) {
   const [filters, setFilters] = useState<DashboardFilters>({
@@ -1719,7 +2014,9 @@ function StcDashboard({
   });
 
   const filteredCycles = cycles.filter((cycle) => {
-    const statusMatch = filters.status === "todos" || cycle.status === filters.status;
+    const statusMatch =
+      filters.status === "todos" ||
+      (cycle.creationStatus === "aprovado" && cycle.status === filters.status);
     const objectMatch = filters.object === "todos" || cycle.objectCode === filters.object;
     const ugMatch = filters.ug === "todos" || cycle.ugIds.includes(filters.ug);
     const dateMatch = !filters.date || cycle.deadline === filters.date || cycle.createdAt.includes(filters.date);
@@ -1728,30 +2025,31 @@ function StcDashboard({
 
   const objectOptions = [...new Set(cycles.map((cycle) => cycle.objectCode))];
 
+  const operationalCycles = cycles.filter((cycle) => cycle.creationStatus === "aprovado");
   // §1.2: a mesma paleta dos status vale para os KPIs — amarelo/laranja = alguém precisa agir.
   const metrics = [
-    ["Coletas ativas", cycles.filter((cycle) => cycle.status === "ativo").length, "Aguardando envios das UGs", "info"] as const,
+    ["Coletas ativas", operationalCycles.filter((cycle) => cycle.status === "ativo").length, "Aguardando envios das UGs", "info"] as const,
     [
       "Aguardando ponto focal",
-      cycles.filter((cycle) => cycle.status === "aguardando-ponto-focal").length,
+      operationalCycles.filter((cycle) => cycle.status === "aguardando-ponto-focal").length,
       "Respostas para validação do órgão",
       "warning",
     ] as const,
     [
       "Aguardando análise da STC",
-      cycles.filter((cycle) => cycle.status === "aguardando-analise-stc").length,
+      operationalCycles.filter((cycle) => cycle.status === "aguardando-analise-stc").length,
       "Respostas novas para conferir",
       "warning",
     ] as const,
     [
       "Aguardando correção",
-      cycles.filter((cycle) => cycle.status === "correcao").length,
+      operationalCycles.filter((cycle) => cycle.status === "correcao").length,
       "Devolvidas para a UG corrigir",
       "orange",
     ] as const,
     [
       "Não enviadas no prazo",
-      cycles.filter((cycle) => cycle.status === "nao-enviado-no-prazo").length,
+      operationalCycles.filter((cycle) => cycle.status === "nao-enviado-no-prazo").length,
       "Prazo venceu sem resposta",
       "danger",
     ] as const,
@@ -1760,9 +2058,9 @@ function StcDashboard({
   return (
     <div className="workflow-page wide-page stc-dashboard-page">
       <SectionHeader
-        eyebrow="Painel STC"
-        title="Coletas"
-        description="O andamento de cada coleta aparece no cartão, sem clique — detalhes e validação ficam a um passo."
+        eyebrow="Acompanhamento STC"
+        title="Ciclos"
+        description="Acompanhe ciclos em revisão e, depois da aprovação, o andamento de cada coleta por UG."
       />
 
       <div className="metrics-grid dashboard-metrics">
@@ -1781,7 +2079,7 @@ function StcDashboard({
       <section className="card filter-panel">
         <div>
           <span className="eyebrow">Filtros do painel</span>
-          <h3>Encontrar coleta por status, objeto, UG ou data</h3>
+          <h3>Encontrar ciclo por status operacional, objeto, UG ou data</h3>
         </div>
         <div className="filters-grid">
           <StatusFilter
@@ -1824,24 +2122,68 @@ function StcDashboard({
       <section className="card cycle-list-card stc-cycle-list-card">
         <div className="table-header">
           <div>
-            <span className="eyebrow">Coletas criadas</span>
-            <h3>Lista operacional</h3>
+            <span className="eyebrow">Ciclos criados</span>
+            <h3>Lista de acompanhamento</h3>
           </div>
-          <button type="button" className="primary-button ripple-button" onClick={openCreate}>
-            <Icon name="filter" />
-            Nova coleta
-          </button>
         </div>
 
         <div className="cycle-list stc-cycle-list">
           {!filteredCycles.length ? (
             <div className="empty-state filtered-empty-state">
               <Icon name="filter" size={28} />
-              <strong>Nenhuma coleta combina com estes filtros</strong>
-              <span>Limpe um filtro ou crie uma nova coleta.</span>
+              <strong>Nenhum ciclo combina com estes filtros</strong>
+              <span>Limpe um filtro para voltar à lista completa.</span>
             </div>
           ) : null}
-          {filteredCycles.map((cycle) => (
+          {filteredCycles.map((cycle) =>
+            cycle.creationStatus !== "aprovado" ? (
+              <article key={cycle.id} className="cycle-row-card stc-cycle-row creation-pending-card">
+                <div className="cycle-row-main">
+                  <div>
+                    <strong>{cycle.title}</strong>
+                    <span>
+                      {cycle.objectCode} · {kindLabel(cycle.objectKind)} · {cycle.ugIds.length} UG(s)
+                    </span>
+                  </div>
+                  <StatusPill tone={cycle.creationStatus === "ajustes-solicitados" ? "orange" : "warning"}>
+                    {creationStatusLabels[cycle.creationStatus]}
+                  </StatusPill>
+                </div>
+                <div className="creation-pending-summary">
+                  <Icon name="lock" />
+                  <div>
+                    <strong>Ainda não enviado às UGs</strong>
+                    <span>Coletas e links serão gerados somente após a aprovação do especialista.</span>
+                  </div>
+                </div>
+                <div className="cycle-meta-grid creation-update-meta">
+                  <span>Última atualização: {cycle.lastUpdatedAt}</span>
+                  <span>Responsável: {cycle.lastUpdatedBy}</span>
+                </div>
+                {cycle.reviewHistory
+                  .filter((event) => event.type === "ajustes-solicitados")
+                  .slice(-1)
+                  .map((event) => (
+                    <div className="alert" key={event.id}>
+                      <Icon name="bell" />
+                      <div>
+                        <strong>Observação do especialista</strong>
+                        <span>{event.message}</span>
+                      </div>
+                    </div>
+                  ))}
+                <div className="card-actions compact">
+                  <button type="button" className="primary-button" onClick={() => openCreation(cycle.id)}>
+                    <Icon name={role === "stc-analista" ? "edit" : "clipboard"} />
+                    {role === "stc-analista"
+                      ? cycle.creationStatus === "ajustes-solicitados"
+                        ? "Revisar ajustes"
+                        : "Editar ciclo"
+                      : "Analisar criação"}
+                  </button>
+                </div>
+              </article>
+            ) : (
             <article key={cycle.id} className="cycle-row-card stc-cycle-row">
               <div className="cycle-row-main">
                 <div>
@@ -1938,9 +2280,193 @@ function StcDashboard({
                 </button>
               </div>
             </article>
-          ))}
+            ),
+          )}
         </div>
       </section>
+    </div>
+  );
+}
+
+function FieldCatalogPicker({
+  fields,
+  selectedIds,
+  setSelectedIds,
+  mode,
+  objectFieldIds = [],
+  readOnly = false,
+  groupLabel,
+  searchLabel,
+}: {
+  fields: readonly FieldDefinition[];
+  selectedIds: string[];
+  setSelectedIds: (ids: string[]) => void;
+  mode: ObjectKind;
+  objectFieldIds?: readonly string[];
+  readOnly?: boolean;
+  groupLabel: string;
+  searchLabel: string;
+}) {
+  const [search, setSearch] = useState("");
+  const normalizedSearch = search.trim().toLocaleLowerCase("pt-BR");
+  const matchesSearch = (field: FieldDefinition) =>
+    !normalizedSearch || field.label.toLocaleLowerCase("pt-BR").includes(normalizedSearch);
+  const objectIds = new Set(objectFieldIds);
+  const groups =
+    mode === "fixo"
+      ? [
+          { label: "Campos do objeto", fields: fields.filter((field) => objectIds.has(field.id)) },
+          {
+            label: "Outros campos do Tesauro",
+            fields: fields.filter((field) => !objectIds.has(field.id)),
+          },
+        ]
+      : Array.from(
+          fields.reduce((byInitial, field) => {
+            const initial = field.label.slice(0, 1).toLocaleUpperCase("pt-BR") || "#";
+            byInitial.set(initial, [...(byInitial.get(initial) ?? []), field]);
+            return byInitial;
+          }, new Map<string, FieldDefinition[]>()),
+        )
+          .sort(([left], [right]) => left.localeCompare(right, "pt-BR"))
+          .map(([label, groupedFields]) => ({ label, fields: groupedFields }));
+
+  const toggle = (fieldId: string) => {
+    if (readOnly) return;
+    setSelectedIds(
+      selectedIds.includes(fieldId)
+        ? selectedIds.filter((id) => id !== fieldId)
+        : [...selectedIds, fieldId],
+    );
+  };
+
+  return (
+    <div className="field-catalog-picker">
+      <label className="field-search">
+        {searchLabel}
+        <input
+          type="search"
+          value={search}
+          onChange={(event) => setSearch(event.target.value)}
+          placeholder="Digite parte do nome do campo"
+        />
+      </label>
+      <div className="metadata-list field-catalog-list" role="group" aria-label={groupLabel}>
+        {groups.map((group) => {
+          const visibleFields = group.fields.filter(matchesSearch);
+          if (!visibleFields.length && normalizedSearch) return null;
+          return (
+            <section className="field-catalog-group" key={group.label}>
+              <h4>{group.label}</h4>
+              {visibleFields.map((field) => {
+                const selected = selectedIds.includes(field.id);
+                return (
+                  <button
+                    key={field.id}
+                    type="button"
+                    disabled={readOnly}
+                    aria-pressed={selected}
+                    className={selected ? "metadata-row selected" : "metadata-row"}
+                    onClick={() => toggle(field.id)}
+                  >
+                    <span>{selected ? <Icon name="check" size={14} /> : null}</span>
+                    <strong>{field.label}</strong>
+                    <small>{field.type}</small>
+                  </button>
+                );
+              })}
+            </section>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function AttachmentCatalogPicker({
+  options,
+  selectedLabels,
+  setSelectedLabels,
+  readOnly = false,
+  groupLabel,
+  customInputLabel,
+}: {
+  options: readonly AttachmentDefinition[];
+  selectedLabels: string[];
+  setSelectedLabels: (labels: string[]) => void;
+  readOnly?: boolean;
+  groupLabel: string;
+  customInputLabel: string;
+}) {
+  const [customName, setCustomName] = useState("");
+  const optionLabels = new Set(options.map((option) => option.label));
+  const customLabels = selectedLabels.filter((label) => !optionLabels.has(label));
+
+  const toggle = (label: string) => {
+    if (readOnly) return;
+    setSelectedLabels(
+      selectedLabels.includes(label)
+        ? selectedLabels.filter((item) => item !== label)
+        : [...selectedLabels, label],
+    );
+  };
+
+  const addCustom = () => {
+    const normalized = customName.trim();
+    if (!normalized || selectedLabels.includes(normalized) || readOnly) return;
+    setSelectedLabels([...selectedLabels, normalized]);
+    setCustomName("");
+  };
+
+  return (
+    <div className="attachment-catalog-picker">
+      <div className="attachment-options" role="group" aria-label={groupLabel}>
+        {options.map((option) => {
+          const selected = selectedLabels.includes(option.label);
+          return (
+            <button
+              key={option.id}
+              type="button"
+              disabled={readOnly}
+              aria-pressed={selected}
+              className={selected ? "selection-row selected" : "selection-row"}
+              onClick={() => toggle(option.label)}
+            >
+              <span className="check-box">{selected ? <Icon name="check" size={14} /> : null}</span>
+              <strong>{option.label}</strong>
+            </button>
+          );
+        })}
+      </div>
+      {!readOnly ? (
+        <div className="attachment-custom-row">
+          <label>
+            {customInputLabel}
+            <input
+              value={customName}
+              onChange={(event) => setCustomName(event.target.value)}
+              placeholder="Ex.: Cópia do contrato em PDF"
+            />
+          </label>
+          <button type="button" className="ghost-button" disabled={!customName.trim()} onClick={addCustom}>
+            <Icon name="upload" size={14} /> Adicionar anexo personalizado
+          </button>
+        </div>
+      ) : null}
+      {customLabels.length ? (
+        <div className="attachment-custom-list">
+          {customLabels.map((label) => (
+            <span key={label}>
+              {label}
+              {!readOnly ? (
+                <button type="button" aria-label={`Remover anexo ${label}`} onClick={() => toggle(label)}>
+                  <Icon name="x" size={12} />
+                </button>
+              ) : null}
+            </span>
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -1950,6 +2476,8 @@ function StcCreateCycle({
   onKindChange,
   object,
   objects,
+  fieldCatalog,
+  attachments,
   ugList,
   onObjectChange,
   selectedUgs,
@@ -1958,12 +2486,15 @@ function StcCreateCycle({
   setSelectedMetadataIds,
   draft,
   setDraft,
-  onActivate,
+  editingCycle,
+  onSubmit,
 }: {
   kind: ObjectKind | null;
   onKindChange: (kind: ObjectKind) => void;
   object: TransparencyObject | null;
   objects: readonly TransparencyObject[];
+  fieldCatalog: readonly FieldDefinition[];
+  attachments: readonly AttachmentDefinition[];
   ugList: Ug[];
   onObjectChange: (id: string) => void;
   selectedUgs: string[];
@@ -1972,18 +2503,27 @@ function StcCreateCycle({
   setSelectedMetadataIds: (ids: string[]) => void;
   draft: CycleDraft;
   setDraft: (draft: CycleDraft) => void;
-  onActivate: () => void;
+  editingCycle: CycleItem | null;
+  onSubmit: () => void;
 }) {
   const availableUgs = ugList.filter((ug) => ug.id !== "stc");
   const selectedUgRows = selectedUgs
     .map((ugId) => availableUgs.find((ug) => ug.id === ugId))
     .filter((ug): ug is Ug => Boolean(ug));
-  const selectedFields = object
-    ? object.fields.filter((field) => selectedMetadataIds.includes(field.id))
-    : [];
+  const selectedFields = fieldCatalog.filter((field) => selectedMetadataIds.includes(field.id));
   const definedAttachments = draft.requiredAttachments.filter((item) => item.trim().length > 0);
+  const configurationReady = kind === "variavel" || Boolean(object);
+  const objectIdentityReady =
+    kind === "fixo" ? Boolean(object) : Boolean(draft.variableObjectName.trim());
+  const effectiveObjectCode = object?.code ?? draft.variableObjectCode;
+  const effectiveObjectName = object ? titleCase(object.name) : draft.variableObjectName.trim();
   const canActivate =
-    Boolean(object) && selectedUgRows.length > 0 && selectedFields.length > 0 && draft.title.trim().length > 0;
+    Boolean(kind) &&
+    objectIdentityReady &&
+    selectedUgRows.length > 0 &&
+    selectedFields.length > 0 &&
+    draft.title.trim().length > 0 &&
+    draft.notificationChannel.trim().length > 0;
 
   const toggleUg = (ugId: string) => {
     setSelectedUgs(
@@ -1993,42 +2533,12 @@ function StcCreateCycle({
     );
   };
 
-  const toggleMetadata = (fieldId: string) => {
-    setSelectedMetadataIds(
-      selectedMetadataIds.includes(fieldId)
-        ? selectedMetadataIds.filter((id) => id !== fieldId)
-        : [...selectedMetadataIds, fieldId],
-    );
-  };
-
-  // §2.3: boxes de DEFINIÇÃO dos anexos exigidos — não confundir com o upload do respondente (§0.1).
-  const addAttachmentBox = () => {
-    // TODO(P-013): sem limite de quantidade/tamanho de upload no protótipo.
-    setDraft({ ...draft, requiredAttachments: [...draft.requiredAttachments, ""] });
-  };
-
-  const renameAttachment = (index: number, value: string) => {
-    setDraft({
-      ...draft,
-      requiredAttachments: draft.requiredAttachments.map((item, position) =>
-        position === index ? value : item,
-      ),
-    });
-  };
-
-  const removeAttachmentAt = (index: number) => {
-    setDraft({
-      ...draft,
-      requiredAttachments: draft.requiredAttachments.filter((_, position) => position !== index),
-    });
-  };
-
   return (
     <div className="workflow-page wide-page">
       <SectionHeader
-        eyebrow="Criação STC"
-        title="Montar coleta"
-        description="Funil invertido: escolha o tipo, depois o objeto — as UGs e os campos vêm em seguida. O link gerado é anexado ao SEI."
+        eyebrow={editingCycle ? "Edição do ciclo" : "Criação STC"}
+        title={editingCycle ? "Editar ciclo" : "Criar Ciclo"}
+        description="Escolha o tipo, o objeto, as UGs e os campos. O ciclo só gera coletas e links depois da aprovação do especialista."
       />
 
       <div className="create-workspace">
@@ -2039,15 +2549,17 @@ function StcCreateCycle({
             <button
               type="button"
               className={kind === "fixo" ? "kind-square selected" : "kind-square"}
+              aria-pressed={kind === "fixo"}
               onClick={() => onKindChange("fixo")}
             >
               <Icon name="file" size={22} />
               <strong>Objeto fixo</strong>
-              <span>Recorrente: planilha-padrão pronta e anexos já definidos no registro do objeto.</span>
+              <span>Recorrente: usa o objeto do Tesauro/Registro; o arquivo do modelo será vinculado pelo código.</span>
             </button>
             <button
               type="button"
               className={kind === "variavel" ? "kind-square selected" : "kind-square"}
+              aria-pressed={kind === "variavel"}
               onClick={() => onKindChange("variavel")}
             >
               <Icon name="edit" size={22} />
@@ -2057,21 +2569,19 @@ function StcCreateCycle({
           </div>
         </section>
 
-        {kind ? (
+        {kind === "fixo" ? (
           <section className="card create-card span-5">
             <div className="card-title-line">
               <Icon name="filter" />
               <div>
                 <span className="eyebrow">Passo 2 · Objeto</span>
-                <h3>{kind === "fixo" ? "Objetos fixos do registro" : "Objetos variáveis"}</h3>
+                <h3>Objetos fixos do Tesauro e do Registro</h3>
               </div>
             </div>
 
             {/* §2.1: sem reordenar — o objeto escolhido fica no lugar, apenas marcado. */}
             <div className="object-scroll">
-              {objects
-                .filter((item) => kindFromFormat(item.format) === kind)
-                .map((item) => (
+              {objects.map((item) => (
                   <button
                     key={item.id}
                     type="button"
@@ -2080,6 +2590,7 @@ function StcCreateCycle({
                         ? "tesauro-object-button selected"
                         : "tesauro-object-button"
                     }
+                    aria-pressed={Boolean(object && item.id === object.id)}
                     onClick={() => onObjectChange(item.id)}
                   >
                     <span>{item.code}</span>
@@ -2091,35 +2602,61 @@ function StcCreateCycle({
                 ))}
             </div>
           </section>
+        ) : kind === "variavel" ? (
+          <section className="card create-card span-5">
+            <div className="card-title-line">
+              <Icon name="edit" />
+              <div>
+                <span className="eyebrow">Passo 2 · Objeto único</span>
+                <h3>Identifique o objeto deste ciclo</h3>
+              </div>
+            </div>
+            <div className="details-form">
+              <label className="full-row">
+                Nome do objeto
+                <input
+                  value={draft.variableObjectName}
+                  onChange={(event) => setDraft({ ...draft, variableObjectName: event.target.value })}
+                  placeholder="Ex.: Levantamento emergencial de contratos"
+                />
+              </label>
+              <div className="full-row inline-note">
+                <span>Código automático do objeto</span>
+                <strong>{draft.variableObjectCode}</strong>
+              </div>
+              <p className="muted-text full-row">
+                Este objeto pertence somente ao ciclo e não será incluído no Registro.
+              </p>
+            </div>
+          </section>
         ) : (
           <section className="card create-card span-12">
             <div className="empty-state">
               <Icon name="filter" size={28} />
               <strong>Comece pelo tipo</strong>
-              <span>Escolha "Objeto fixo" ou "Objeto variável" acima — a lista de objetos aparece filtrada aqui.</span>
+              <span>Escolha "Objeto fixo" ou "Objeto variável" acima para continuar.</span>
             </div>
           </section>
         )}
 
-        {kind && object ? (
+        {kind && configurationReady ? (
           <>
         <section className="card create-card span-4">
           <span className="eyebrow">Passo 3 · Destinatários</span>
           <h3>Todas as UGs cadastradas</h3>
           <p className="muted-text">
-            {/* TODO(P-022): suggestedUgs do Tesauro como stand-in do mapeamento informação↔órgão. */}
             As {availableUgs.length} UGs do cadastro aparecem aqui — o Registro cadastra as demais.
-            A pré-seleção vem do objeto; a STC pode incluir ou remover livremente, no fixo e no variável.
+            Nenhuma UG é presumida: a STC escolhe explicitamente as destinatárias deste ciclo.
           </p>
 
-          <div className="selection-list">
+          <div className="selection-list" role="group" aria-label="Unidades gestoras do ciclo">
             {availableUgs.map((ug) => {
               const selected = selectedUgs.includes(ug.id);
-              const suggested = object.suggestedUgs.includes(ug.id);
               return (
                 <button
                   key={ug.id}
                   type="button"
+                  aria-pressed={selected}
                   className={selected ? "selection-row selected" : "selection-row"}
                   onClick={() => toggleUg(ug.id)}
                 >
@@ -2128,7 +2665,7 @@ function StcCreateCycle({
                     <strong>{ug.acronym}</strong>
                     <small>{ug.name}</small>
                   </span>
-                  <em>{suggested ? "Sugerida" : "Editável"}</em>
+                  <em>Editável</em>
                 </button>
               );
             })}
@@ -2140,27 +2677,18 @@ function StcCreateCycle({
           <h3>Campos obrigatórios</h3>
           <p className="muted-text">
             {draft.kind === "fixo"
-              ? "Vêm prontos do Tesauro — a planilha-padrão já existe."
-              : "A STC escolhe os campos e o sistema gera a planilha-padrão."}
+              ? "Os campos obrigatórios do objeto vêm selecionados; os demais ficam disponíveis."
+              : "Escolha no catálogo global os campos da planilha deste ciclo."}
           </p>
-
-          <div className="metadata-list">
-            {object.fields.map((field) => {
-              const selected = selectedMetadataIds.includes(field.id);
-              return (
-                <button
-                  key={field.id}
-                  type="button"
-                  className={selected ? "metadata-row selected" : "metadata-row"}
-                  onClick={() => toggleMetadata(field.id)}
-                >
-                  <span>{selected ? <Icon name="check" size={14} /> : null}</span>
-                  <strong>{field.label}</strong>
-                  <small>{field.type}</small>
-                </button>
-              );
-            })}
-          </div>
+          <FieldCatalogPicker
+            fields={fieldCatalog}
+            selectedIds={selectedMetadataIds}
+            setSelectedIds={setSelectedMetadataIds}
+            mode={draft.kind}
+            objectFieldIds={object?.fields.map((field) => field.id) ?? []}
+            groupLabel="Campos obrigatórios do ciclo"
+            searchLabel="Buscar campo"
+          />
         </section>
 
         <section className="card create-card span-7">
@@ -2174,33 +2702,17 @@ function StcCreateCycle({
 
           <span className="eyebrow">Anexos obrigatórios</span>
           <p className="muted-text">
-            {draft.kind === "fixo"
-              ? "Vieram do registro do objeto — remova um box ou adicione outro se esta coleta pedir diferente."
-              : "Escreva o título de cada anexo exigido (ex.: Edital em PDF) e adicione quantos precisar."}
+            {kind === "fixo"
+              ? "Selecione apenas os anexos exigidos neste ciclo. As cinco opções vêm do Tesauro. Anexos explicitamente obrigatórios do objeto fixo começam marcados; os demais ficam disponíveis."
+              : "Selecione apenas os anexos exigidos neste ciclo. As cinco opções vêm do Tesauro e, no objeto variável, nenhuma começa marcada."} Você também pode adicionar um nome personalizado.
           </p>
-          <div className="attachment-boxes">
-            {draft.requiredAttachments.map((label, index) => (
-              <div key={index} className="attachment-box">
-                <input
-                  value={label}
-                  placeholder="Título do anexo (ex.: Cópia do contrato em PDF)"
-                  onChange={(event) => renameAttachment(index, event.target.value)}
-                />
-                <button
-                  type="button"
-                  className="icon-button"
-                  onClick={() => removeAttachmentAt(index)}
-                  aria-label={`Remover anexo ${index + 1}`}
-                >
-                  <Icon name="x" size={14} />
-                </button>
-              </div>
-            ))}
-            <button type="button" className="ghost-button" onClick={addAttachmentBox}>
-              <Icon name="upload" size={14} />
-              Adicionar mais anexo
-            </button>
-          </div>
+          <AttachmentCatalogPicker
+            options={attachments}
+            selectedLabels={draft.requiredAttachments}
+            setSelectedLabels={(requiredAttachments) => setDraft({ ...draft, requiredAttachments })}
+            groupLabel="Anexos obrigatórios do ciclo"
+            customInputLabel="Nome do anexo personalizado"
+          />
           {!definedAttachments.length ? (
             <p className="muted-text">Nenhum anexo obrigatório definido — o contador do upload do respondente ficará em zero.</p>
           ) : null}
@@ -2256,10 +2768,13 @@ function StcCreateCycle({
             </label>
             <label>
               Canal de notificação
-              <input value={draft.notificationChannel} readOnly />
+              <input
+                value={draft.notificationChannel}
+                onChange={(event) => setDraft({ ...draft, notificationChannel: event.target.value })}
+              />
             </label>
             <label className="full-row">
-              Observações / email padrão
+              Mensagem final / email padrão
               <textarea
                 value={draft.observations}
                 onChange={(event) => setDraft({ ...draft, observations: event.target.value })}
@@ -2272,16 +2787,16 @@ function StcCreateCycle({
           <div className="cycle-highlight-head">
             <div>
               <span className="eyebrow">Resumo da solicitação</span>
-              <h3>Coleta pronta para acionamento</h3>
-              <p>Ao acionar, cada UG recebe uma coleta com link próprio — anexado ao SEI, único elo entre os dois.</p>
+              <h3>Ciclo pronto para análise</h3>
+              <p>O especialista confere esta configuração antes que cada UG receba sua coleta com link próprio.</p>
             </div>
             <StatusPill tone="info">{kindLabel(draft.kind)}</StatusPill>
           </div>
 
           <div className="summary-metrics">
             <div>
-              <strong>{object.code}</strong>
-              <span>{titleCase(object.name)}</span>
+              <strong>{effectiveObjectCode || "A definir"}</strong>
+              <span>{effectiveObjectName || "Informe o nome do objeto"}</span>
             </div>
             <div>
               <strong>{selectedUgRows.length}</strong>
@@ -2301,7 +2816,7 @@ function StcCreateCycle({
             </div>
             <div>
               <strong>{draft.deadline}</strong>
-              <span>prazo da coleta</span>
+              <span>prazo do ciclo</span>
             </div>
           </div>
 
@@ -2315,14 +2830,409 @@ function StcCreateCycle({
             type="button"
             className="primary-button ripple-button"
             disabled={!canActivate}
-            onClick={onActivate}
+            onClick={onSubmit}
           >
             <Icon name="send" />
-            Acionar e gerar links das coletas
+            {editingCycle
+              ? editingCycle.creationStatus === "ajustes-solicitados"
+                ? "Reenviar para análise"
+                : "Salvar e manter em análise"
+              : "Enviar ciclo para análise"}
           </button>
         </section>
           </>
         ) : null}
+      </div>
+    </div>
+  );
+}
+
+function StcCreationReview({
+  cycles,
+  objects,
+  ugList,
+  fieldCatalog,
+  attachments,
+  initialCycleId,
+  onReview,
+}: {
+  cycles: CycleItem[];
+  objects: readonly TransparencyObject[];
+  ugList: Ug[];
+  fieldCatalog: readonly FieldDefinition[];
+  attachments: readonly AttachmentDefinition[];
+  initialCycleId: string;
+  onReview: (
+    cycleId: string,
+    draft: CycleReviewDraft,
+    action: "salvar" | "ajustes" | "aprovar",
+    message: string,
+  ) => void;
+}) {
+  const reviewCycles = cycles
+    .map((cycle, index) => ({ cycle, index }))
+    .filter(({ cycle }) => cycle.creationStatus !== undefined)
+    .sort(
+      (left, right) =>
+        left.cycle.createdAtIso.localeCompare(right.cycle.createdAtIso) || left.index - right.index,
+    )
+    .map(({ cycle }) => cycle);
+  const initialCycle = reviewCycles.find((cycle) => cycle.id === initialCycleId);
+  const [filter, setFilter] = useState<"todos" | CreationReviewStatus>(
+    initialCycle?.creationStatus ?? "aguardando-analise",
+  );
+  const visibleCycles = reviewCycles.filter((cycle) => filter === "todos" || cycle.creationStatus === filter);
+  const [selectedId, setSelectedId] = useState(initialCycle?.id ?? visibleCycles[0]?.id ?? "");
+  const selectedCycle = visibleCycles.find((cycle) => cycle.id === selectedId) ?? visibleCycles[0];
+  const [reviewDraft, setReviewDraft] = useState<CycleReviewDraft | null>(() =>
+    selectedCycle ? reviewDraftFromCycle(selectedCycle) : null,
+  );
+  const [adjustmentMessage, setAdjustmentMessage] = useState("");
+  const [adjustmentError, setAdjustmentError] = useState("");
+
+  useEffect(() => {
+    const requestedCycle = reviewCycles.find((cycle) => cycle.id === initialCycleId);
+    if (requestedCycle) {
+      setFilter(requestedCycle.creationStatus);
+      setSelectedId(requestedCycle.id);
+    }
+  }, [initialCycleId]);
+
+  useEffect(() => {
+    if (!selectedCycle) return;
+    setReviewDraft(reviewDraftFromCycle(selectedCycle));
+    setAdjustmentMessage("");
+    setAdjustmentError("");
+  }, [selectedCycle?.id, selectedCycle?.lastUpdatedAt, selectedCycle?.creationStatus]);
+
+  const selectCycle = (cycleId: string) => {
+    setSelectedId(cycleId);
+    const cycle = reviewCycles.find((item) => item.id === cycleId);
+    if (cycle) setReviewDraft(reviewDraftFromCycle(cycle));
+  };
+
+  const currentObject = reviewDraft
+    ? objects.find((object) => object.code === reviewDraft.objectCode) ?? null
+    : null;
+  const readOnly = selectedCycle?.creationStatus === "aprovado";
+  const canApprove = Boolean(
+    reviewDraft?.title.trim() &&
+      reviewDraft?.objectCode &&
+      (reviewDraft.objectKind === "fixo" || reviewDraft.objectName.trim()) &&
+      reviewDraft.ugIds.length &&
+      reviewDraft.metadataIds.length &&
+      reviewDraft.notificationChannel.trim(),
+  );
+
+  const requestAdjustments = () => {
+    if (!selectedCycle || !reviewDraft) return;
+    if (!adjustmentMessage.trim()) {
+      setAdjustmentError("Escreva uma observação antes de solicitar ajustes.");
+      return;
+    }
+    onReview(selectedCycle.id, reviewDraft, "ajustes", adjustmentMessage.trim());
+    setAdjustmentError("");
+  };
+
+  return (
+    <div className="workflow-page wide-page creation-review-page">
+      <SectionHeader
+        eyebrow="Especialista STC"
+        title="Aprovar Ciclo"
+        description="Confira todos os componentes do ciclo antes que as coletas e os links sejam enviados às UGs."
+      />
+
+      <section className="card creation-review-filter">
+        <label>
+          Status da análise
+          <select value={filter} onChange={(event) => setFilter(event.target.value as typeof filter)}>
+            <option value="todos">Todos</option>
+            <option value="aguardando-analise">Aguardando análise</option>
+            <option value="ajustes-solicitados">Ajustes solicitados</option>
+            <option value="aprovado">Aprovados</option>
+          </select>
+        </label>
+      </section>
+
+      <div className="creation-review-layout">
+        <section className="card creation-review-queue" role="region" aria-label="Fila única de aprovação">
+          <span className="eyebrow">Fila de ciclos</span>
+          <h3>{visibleCycles.length} ciclo(s)</h3>
+          <div className="creation-review-list">
+            {visibleCycles.map((cycle) => (
+              <button
+                key={cycle.id}
+                type="button"
+                className={cycle.id === selectedCycle?.id ? "selected" : ""}
+                aria-pressed={cycle.id === selectedCycle?.id}
+                onClick={() => selectCycle(cycle.id)}
+                aria-label={`${cycle.creationStatus === "aprovado" ? "Consultar" : "Analisar"} ${cycle.title}`}
+              >
+                <span>
+                  <strong>{cycle.title}</strong>
+                  <small>
+                    {cycle.objectCode} · {cycle.ugIds.length} UG(s) ·{" "}
+                    {cycle.objectKind === "fixo" ? "Tesauro/Registro" : "objeto único deste ciclo"}
+                  </small>
+                </span>
+                <StatusPill tone={cycle.creationStatus === "ajustes-solicitados" ? "orange" : cycle.creationStatus === "aprovado" ? "success" : "warning"}>
+                  {creationStatusLabels[cycle.creationStatus]}
+                </StatusPill>
+              </button>
+            ))}
+            {!visibleCycles.length ? (
+              <div className="empty-state">
+                <Icon name="check" size={26} />
+                <strong>Nenhum ciclo neste status</strong>
+                <span>Altere o filtro para consultar os demais ciclos.</span>
+              </div>
+            ) : null}
+          </div>
+        </section>
+
+        {selectedCycle && reviewDraft ? (
+          <section className="card creation-review-detail">
+            <div className="table-header">
+              <div>
+                <span className="eyebrow">Configuração completa</span>
+                <h3>{selectedCycle.objectCode} · {selectedCycle.objectName}</h3>
+              </div>
+              <StatusPill tone={readOnly ? "success" : selectedCycle.creationStatus === "ajustes-solicitados" ? "orange" : "warning"}>
+                {creationStatusLabels[selectedCycle.creationStatus]}
+              </StatusPill>
+            </div>
+            <p className="muted-text">
+              Última atualização em {selectedCycle.lastUpdatedAt}, por {selectedCycle.lastUpdatedBy}.
+            </p>
+            <p className="muted-text review-origin">
+              {reviewDraft.objectKind === "fixo"
+                ? "Origem: Tesauro/Registro"
+                : "Origem: objeto único deste ciclo"}
+            </p>
+            {selectedCycle.spreadsheetStatus !== "pending-approval" ? (
+              <div className="inline-note spreadsheet-status-note" role="status">
+                <Icon name={selectedCycle.spreadsheetStatus === "generated" ? "check" : "clock"} />
+                <strong>
+                  {selectedCycle.spreadsheetStatus === "generated"
+                    ? "Planilha gerada a partir dos campos selecionados"
+                    : `Modelo fixo ${selectedCycle.objectCode} pendente de vinculação`}
+                </strong>
+              </div>
+            ) : null}
+
+            <div className="creation-review-form">
+              <label className="full-row">
+                Título do ciclo em análise
+                <input
+                  value={reviewDraft.title}
+                  disabled={readOnly}
+                  onChange={(event) => setReviewDraft({ ...reviewDraft, title: event.target.value })}
+                />
+              </label>
+              {reviewDraft.objectKind === "fixo" ? (
+                <label>
+                  Objeto fixo
+                  <select
+                    value={reviewDraft.objectCode}
+                    disabled={readOnly}
+                    onChange={(event) => {
+                      const object = objects.find((item) => item.code === event.target.value);
+                      if (!object) return;
+                      setReviewDraft({
+                        ...reviewDraft,
+                        objectCode: object.code,
+                        objectName: titleCase(object.name),
+                        objectKind: "fixo",
+                        metadataIds: requiredFieldIdsForObject(object),
+                        requiredAttachments: requiredAttachmentsForObject(object),
+                      });
+                    }}
+                  >
+                    {objects.map((object) => (
+                      <option key={object.id} value={object.code}>
+                        {object.code} · {titleCase(object.name)}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : (
+                <>
+                  <label>
+                    Nome do objeto
+                    <input
+                      value={reviewDraft.objectName}
+                      disabled={readOnly}
+                      onChange={(event) => setReviewDraft({ ...reviewDraft, objectName: event.target.value })}
+                    />
+                  </label>
+                  <div className="inline-note">
+                    <span>Código do objeto único</span>
+                    <strong>{reviewDraft.objectCode}</strong>
+                  </div>
+                </>
+              )}
+              <label>
+                Prazo
+                <input
+                  type="date"
+                  value={reviewDraft.deadline}
+                  disabled={readOnly}
+                  onChange={(event) => setReviewDraft({ ...reviewDraft, deadline: event.target.value })}
+                />
+              </label>
+              <label>
+                Número do SEI
+                <input
+                  value={reviewDraft.seiNumber}
+                  disabled={readOnly}
+                  onChange={(event) => setReviewDraft({ ...reviewDraft, seiNumber: event.target.value })}
+                />
+              </label>
+              <label>
+                Canal de notificação
+                <input
+                  value={reviewDraft.notificationChannel}
+                  disabled={readOnly}
+                  onChange={(event) => setReviewDraft({ ...reviewDraft, notificationChannel: event.target.value })}
+                />
+              </label>
+              <label className="full-row">
+                Observações da criação
+                <textarea
+                  value={reviewDraft.creationObservations}
+                  disabled={readOnly}
+                  onChange={(event) => setReviewDraft({ ...reviewDraft, creationObservations: event.target.value })}
+                />
+              </label>
+            </div>
+
+            <div className="review-section">
+              <span className="eyebrow">UGs selecionadas</span>
+              <div className="selection-list compact-selection-list">
+                {ugList.filter((ug) => ug.id !== "stc").map((ug) => {
+                  const selected = reviewDraft.ugIds.includes(ug.id);
+                  return (
+                    <button
+                      key={ug.id}
+                      type="button"
+                      disabled={readOnly}
+                      aria-pressed={selected}
+                      className={selected ? "selection-row selected" : "selection-row"}
+                      onClick={() =>
+                        setReviewDraft({
+                          ...reviewDraft,
+                          ugIds: selected
+                            ? reviewDraft.ugIds.filter((id) => id !== ug.id)
+                            : [...reviewDraft.ugIds, ug.id],
+                        })
+                      }
+                    >
+                      <span className="check-box">{selected ? <Icon name="check" size={14} /> : null}</span>
+                      <span><strong>{ug.acronym}</strong><small>{ug.name}</small></span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="review-section">
+              <span className="eyebrow">Campos obrigatórios</span>
+              <FieldCatalogPicker
+                fields={fieldCatalog}
+                selectedIds={reviewDraft.metadataIds}
+                setSelectedIds={(metadataIds) => setReviewDraft({ ...reviewDraft, metadataIds })}
+                mode={reviewDraft.objectKind}
+                objectFieldIds={currentObject?.fields.map((field) => field.id) ?? []}
+                readOnly={readOnly}
+                groupLabel="Campos obrigatórios na análise"
+                searchLabel="Buscar campo na análise"
+              />
+            </div>
+
+            <div className="review-section">
+              <span className="eyebrow">Anexos obrigatórios</span>
+              <AttachmentCatalogPicker
+                options={attachments}
+                selectedLabels={reviewDraft.requiredAttachments}
+                setSelectedLabels={(requiredAttachments) =>
+                  setReviewDraft({ ...reviewDraft, requiredAttachments })
+                }
+                readOnly={readOnly}
+                groupLabel="Anexos obrigatórios na análise"
+                customInputLabel="Nome do anexo personalizado na análise"
+              />
+            </div>
+
+            <div className="switch-row">
+              <div>
+                <strong>Exige validação do ponto focal</strong>
+                <p>Define se a resposta passa pelo ponto focal antes de chegar à STC.</p>
+              </div>
+              <button
+                type="button"
+                className={reviewDraft.requiresFocalPointValidation ? "switch on" : "switch"}
+                role="switch"
+                aria-label="Exigir validação do ponto focal na análise"
+                aria-checked={reviewDraft.requiresFocalPointValidation}
+                disabled={readOnly}
+                onClick={() => setReviewDraft({ ...reviewDraft, requiresFocalPointValidation: !reviewDraft.requiresFocalPointValidation })}
+              />
+            </div>
+
+            {!readOnly ? (
+              <div className="creation-review-actions">
+                <label>
+                  Observação para o analista
+                  <textarea
+                    value={adjustmentMessage}
+                    onChange={(event) => {
+                      setAdjustmentMessage(event.target.value);
+                      if (event.target.value.trim()) setAdjustmentError("");
+                    }}
+                    placeholder="Explique claramente o que precisa ser corrigido"
+                  />
+                </label>
+                {adjustmentError ? <p className="form-error" role="alert">{adjustmentError}</p> : null}
+                <div className="card-actions">
+                  <button type="button" className="secondary-button" onClick={() => onReview(selectedCycle.id, reviewDraft, "salvar", "")}>
+                    <Icon name="edit" /> Salvar alterações
+                  </button>
+                  <button type="button" className="secondary-button" onClick={requestAdjustments}>
+                    <Icon name="refresh" /> Solicitar ajustes
+                  </button>
+                  <button
+                    type="button"
+                    className="primary-button"
+                    disabled={!canApprove}
+                    onClick={() => onReview(selectedCycle.id, reviewDraft, "aprovar", "")}
+                  >
+                    <Icon name="send" /> Aprovar e enviar às UGs
+                  </button>
+                </div>
+              </div>
+            ) : null}
+
+            <div className="review-history">
+              <span className="eyebrow">Histórico da criação</span>
+              {selectedCycle.reviewHistory.map((event) => (
+                <article key={event.id}>
+                  <div>
+                    <strong>{event.author}</strong>
+                    <span>{event.date} · {event.message}</span>
+                  </div>
+                  {event.changes.length ? (
+                    <ul>{event.changes.map((change) => <li key={change}>{change}</li>)}</ul>
+                  ) : null}
+                </article>
+              ))}
+            </div>
+          </section>
+        ) : (
+          <section className="card empty-state">
+            <Icon name="clipboard" size={28} />
+            <strong>Nenhum ciclo disponível para análise</strong>
+          </section>
+        )}
       </div>
     </div>
   );
@@ -2375,7 +3285,13 @@ function StcCycleDetail({
             </div>
             <div>
               <strong>{kindLabel(cycle.objectKind)}</strong>
-              <span>{cycle.objectKind === "fixo" ? "planilha pronta do Tesauro" : "planilha gerada dos campos"}</span>
+              <span>
+                {cycle.spreadsheetStatus === "generated"
+                  ? "Planilha gerada a partir dos campos selecionados"
+                  : cycle.spreadsheetStatus === "fixed-template-pending"
+                    ? `Modelo fixo ${cycle.objectCode} pendente de vinculação`
+                    : "Planilha pendente de aprovação"}
+              </span>
             </div>
             <div>
               <strong>{cycle.requiresFocalPointValidation ? "Exigida" : "Dispensada"}</strong>
@@ -3776,7 +4692,9 @@ function FocalDashboard({
   openCycle: (cycleId: string) => void;
 }) {
   const orgUg = ugList.find((item) => item.id === focalUser.ugId);
-  const orgCycles = cycles.filter((cycle) => cycle.ugIds.includes(focalUser.ugId));
+  const orgCycles = cycles.filter(
+    (cycle) => cycle.creationStatus === "aprovado" && cycle.ugIds.includes(focalUser.ugId),
+  );
   const orgCollections = collections.filter((item) => item.ugId === focalUser.ugId);
   const orgSubmissions = orgCollections
     .flatMap((item) => item.submissions)
@@ -4519,7 +5437,9 @@ function RespDashboard({
                   ) : (
                     <p>
                       {collection.kind === "fixo"
-                        ? "Planilha-padrão pronta para download"
+                        ? cycle?.spreadsheetStatus === "fixed-template-pending"
+                          ? `Modelo fixo ${collection.objectCode} pendente de vinculação`
+                          : "Modelo fixo disponível para download"
                         : "Planilha gerada pela STC"}
                       {collection.requiredAttachments.length
                         ? ` · ${collection.requiredAttachments.length} anexos obrigatórios.`
@@ -4621,13 +5541,15 @@ function RespCollection({
 
   const ug = ugList.find((item) => item.id === collection.ugId);
   const required = collection.requiredAttachments;
+  const fixedTemplatePending =
+    collection.kind === "fixo" && cycle?.spreadsheetStatus === "fixed-template-pending";
   // Correção 3: checagem de anexos por CONTAGEM — enviados ≥ exigidos. Nunca pelo título,
   // nunca pelo conteúdo; pode enviar mais que o exigido, nunca menos.
   const anexosOk = attachmentsMeetRequirement(attachments.length, required.length);
   // Correção 4 (protótipo sem backend): a leitura das colunas é simulada; o controle abaixo
   // força "planilha fora do modelo" para o caminho de reprovação ser demonstrável.
-  const planilhaOk = Boolean(fileName) && !sheetOutOfModel;
-  const structuralOk = planilhaOk && anexosOk;
+  const planilhaOk = !fixedTemplatePending && Boolean(fileName) && !sheetOutOfModel;
+  const structuralOk = !fixedTemplatePending && planilhaOk && anexosOk;
   const missingCount = required.length - attachments.length;
   const templateName = `${collection.objectCode}_planilha_${collection.kind === "fixo" ? "padrao" : "gerada"}.xlsx`;
   const uploadName = `${collection.objectCode.toLowerCase()}_${collection.ugId}_${correcting ? "corrigida" : "preenchida"}.xlsx`;
@@ -4713,9 +5635,18 @@ function RespCollection({
                   <span>5 · Enviar</span>
                   <span>6 · Receber o comprovante</span>
                 </div>
-                <button type="button" className="ghost-button" onClick={() => setDownloaded(true)}>
+                <button
+                  type="button"
+                  className="ghost-button"
+                  disabled={fixedTemplatePending}
+                  onClick={() => setDownloaded(true)}
+                >
                   <Icon name="download" size={16} />
-                  {downloaded ? "Planilha baixada (simulado)" : "Baixar planilha-padrão"}
+                  {fixedTemplatePending
+                    ? `Modelo fixo ${collection.objectCode} pendente de vinculação`
+                    : downloaded
+                      ? "Planilha baixada (simulado)"
+                      : "Baixar planilha-padrão"}
                 </button>
               </article>
 
@@ -4806,7 +5737,11 @@ function RespCollection({
 
             {collection.kind === "fixo" ? (
               <div className="sheet-preview">
-                <span className="eyebrow">Prévia da planilha-padrão</span>
+                <span className="eyebrow">
+                  {fixedTemplatePending
+                    ? "Estrutura esperada do modelo fixo (arquivo pendente)"
+                    : "Prévia da planilha-padrão"}
+                </span>
                 <div className="sheet-preview-scroll">
                   <table>
                     <thead>
@@ -4828,17 +5763,31 @@ function RespCollection({
               </div>
             ) : null}
 
+            {fixedTemplatePending && !readOnly ? (
+              <div className="alert warning wide" role="status">
+                <Icon name="clock" />
+                <div>
+                  <strong>Envio temporariamente indisponível</strong>
+                  <span>
+                    O modelo fixo {collection.objectCode} ainda não foi vinculado. Não é possível subir ou enviar respostas.
+                  </span>
+                </div>
+              </div>
+            ) : null}
+
         <div className="model-upload-grid">
           <article className="model-preview">
             <span className="eyebrow">
               {collection.kind === "fixo"
-                ? "Planilha-padrão pronta (Tesauro)"
+                ? "Modelo fixo do Tesauro/Registro"
                 : "Planilha-padrão gerada pela STC"}
             </span>
-            <h4>{templateName}</h4>
+            <h4>{fixedTemplatePending ? `${collection.objectCode} · arquivo pendente` : templateName}</h4>
             <p>
-              {collection.kind === "fixo"
-                ? "Modelo recorrente do objeto, com os campos e regras mínimas de preenchimento."
+              {fixedTemplatePending
+                ? "O código do modelo está registrado, mas o arquivo real ainda precisa ser vinculado pela STC."
+                : collection.kind === "fixo"
+                  ? "Modelo recorrente do objeto, com os campos e regras mínimas de preenchimento."
                 : "Gerada a partir dos campos que a STC selecionou na criação da coleta."}
             </p>
             <div className="mini-sheet">
@@ -4846,9 +5795,18 @@ function RespCollection({
                 <span key={field.id}>{field.label}</span>
               ))}
             </div>
-            <button type="button" className="ghost-button" onClick={() => setDownloaded(true)}>
+            <button
+              type="button"
+              className="ghost-button"
+              disabled={fixedTemplatePending}
+              onClick={() => setDownloaded(true)}
+            >
               <Icon name="download" size={16} />
-              {downloaded ? "Modelo baixado (simulado)" : "Baixar planilha-padrão"}
+              {fixedTemplatePending
+                ? `Modelo fixo ${collection.objectCode} pendente de vinculação`
+                : downloaded
+                  ? "Modelo baixado (simulado)"
+                  : "Baixar planilha-padrão"}
             </button>
           </article>
 
@@ -4867,9 +5825,15 @@ function RespCollection({
               <button
                 type="button"
                 className={`dropzone${dragging ? " dragging" : ""}`}
-                onClick={() => setFileName(uploadName)}
-                onDragOver={(event) => event.preventDefault()}
+                disabled={fixedTemplatePending}
+                onClick={() => {
+                  if (!fixedTemplatePending) setFileName(uploadName);
+                }}
+                onDragOver={(event) => {
+                  if (!fixedTemplatePending) event.preventDefault();
+                }}
                 onDragEnter={(event) => {
+                  if (fixedTemplatePending) return;
                   event.preventDefault();
                   setDragging(true);
                 }}
@@ -4878,6 +5842,7 @@ function RespCollection({
                 onDrop={(event) => {
                   event.preventDefault();
                   setDragging(false);
+                  if (fixedTemplatePending) return;
                   setFileName(uploadName);
                 }}
               >
@@ -4886,7 +5851,7 @@ function RespCollection({
                 <span>{fileName || "XLSX seguindo a estrutura da planilha-padrão"}</span>
               </button>
             )}
-            {!readOnly && fileName ? (
+            {!readOnly && !fixedTemplatePending && fileName ? (
               <label className="simulate-check">
                 <input
                   type="checkbox"
@@ -4899,7 +5864,7 @@ function RespCollection({
           </article>
         </div>
 
-        {fileName && !planilhaOk ? (
+        {fileName && !planilhaOk && !fixedTemplatePending ? (
           <div className="alert danger wide">
             <Icon name="x" />
             <div>
@@ -4915,15 +5880,27 @@ function RespCollection({
         {/* §7.2/Correção 4: a checagem estrutural mora aqui, com as duas metades separadas. */}
         <div
           className={`quality-strip ${
-            structuralOk ? "success" : fileName && !planilhaOk ? "danger" : "warning"
+            fixedTemplatePending
+              ? "warning"
+              : structuralOk
+                ? "success"
+                : fileName && !planilhaOk
+                  ? "danger"
+                  : "warning"
           }`}
         >
-          <Icon name={structuralOk ? "check" : fileName && !planilhaOk ? "x" : "clock"} />
+          <Icon
+            name={
+              fixedTemplatePending ? "clock" : structuralOk ? "check" : fileName && !planilhaOk ? "x" : "clock"
+            }
+          />
           <div>
             <strong>Checagem estrutural no envio — duas conferências independentes</strong>
             <span>
               Planilha:{" "}
-              {!fileName
+              {fixedTemplatePending
+                ? "modelo fixo aguardando vinculação"
+                : !fileName
                 ? "aguardando o arquivo preenchido"
                 : planilhaOk
                   ? "colunas conferem ✓"
@@ -5168,14 +6145,21 @@ function RespCollection({
             <div className="wizard-actions">
               {!correcting ? (
                 <>
-                  <button type="button" className="ghost-button" onClick={() => setNegativeOpen(true)}>
+                  <button
+                    type="button"
+                    className="ghost-button"
+                    disabled={fixedTemplatePending}
+                    onClick={() => {
+                      if (!fixedTemplatePending) setNegativeOpen(true);
+                    }}
+                  >
                     <Icon name="x" size={16} />
                     Não tenho esta informação
                   </button>
                   <button
                     type="button"
                     className="secondary-button"
-                    disabled={!fileName && !attachments.length}
+                    disabled={fixedTemplatePending || (!fileName && !attachments.length)}
                     onClick={() => onSaveDraft(fileName, attachments)}
                   >
                     <Icon name="edit" size={16} />
@@ -5195,7 +6179,9 @@ function RespCollection({
             </div>
             {!structuralOk ? (
               <p className="wizard-block-hint">
-                {!fileName
+                {fixedTemplatePending
+                  ? `Aguarde a STC vincular o modelo fixo ${collection.objectCode} antes de responder. `
+                  : !fileName
                   ? "Suba a planilha preenchida na etapa 2. "
                   : !planilhaOk
                     ? "A planilha está fora do modelo — baixe o modelo e suba de novo (etapa 2). "
@@ -5214,7 +6200,7 @@ function RespCollection({
 
 export default function App() {
   const [role, setRole] = useState<Role>("login");
-  const [view, setView] = useState<View>("stc-dashboard");
+  const [view, setView] = useState<View>("stc-home");
   const [cycles, setCycles] = useState<CycleItem[]>(seedCycles);
   const [collections, setCollections] = useState<Collection[]>(seedCollections);
   const [respondents, setRespondents] = useState<Respondent[]>(seedRespondents);
@@ -5226,9 +6212,7 @@ export default function App() {
   // ainda vai montar). O Tesauro segue fonte externa (T2) — nada aqui edita o Tesauro.
   const [objectOverrides, setObjectOverrides] = useState<Record<string, Partial<TransparencyObject>>>({});
   const [customObjects, setCustomObjects] = useState<TransparencyObject[]>([]);
-  const [objectAttachmentsRegistry, setObjectAttachmentsRegistry] = useState<Record<string, string[]>>({
-    ...fixedObjectAttachments,
-  });
+  const [objectAttachmentsRegistry, setObjectAttachmentsRegistry] = useState<Record<string, string[]>>({});
   const [objectFieldsRegistry, setObjectFieldsRegistry] = useState<Record<string, FieldDefinition[]>>({});
   const [currentRespondentId, setCurrentRespondentId] = useState("");
   // §2.1: funil invertido — o TIPO é escolhido antes do objeto; a tela nasce sem objeto selecionado.
@@ -5238,6 +6222,8 @@ export default function App() {
   const [selectedMetadataIds, setSelectedMetadataIds] = useState<string[]>([]);
   const [draft, setDraft] = useState<CycleDraft>(draftForObject(defaultObject));
   const [activeCycleId, setActiveCycleId] = useState("ciclo-100");
+  const [editingCycleId, setEditingCycleId] = useState("");
+  const [reviewCycleId, setReviewCycleId] = useState("");
   const [activeCollectionId, setActiveCollectionId] = useState("col-100-seduc");
   const [linkCollectionId, setLinkCollectionId] = useState("col-100-seduc");
   const [validationCollectionId, setValidationCollectionId] = useState("col-100-seduc");
@@ -5252,27 +6238,39 @@ export default function App() {
   );
   const fieldsFor = (object: TransparencyObject): FieldDefinition[] =>
     objectFieldsRegistry[object.code] ?? [...object.fields];
-  const attachmentsFor = (kind: ObjectKind, code: string): string[] =>
-    kind === "fixo" ? [...(objectAttachmentsRegistry[code] ?? [])] : [];
+  const fieldCatalogForCycles = useMemo(() => {
+    const fieldsById = new Map<string, FieldDefinition>();
+    canonicalFields.forEach((field) => fieldsById.set(field.id, { ...field }));
+    allObjects.forEach((object) =>
+      (objectFieldsRegistry[object.code] ?? object.fields).forEach((field) =>
+        fieldsById.set(field.id, { ...field }),
+      ),
+    );
+    return Array.from(fieldsById.values()).sort((left, right) =>
+      left.label.localeCompare(right.label, "pt-BR"),
+    );
+  }, [allObjects, objectFieldsRegistry]);
   const selectedObject = allObjects.find((item) => item.id === objectId) ?? null;
   // §7.1/§7.2: o wizard explica coluna a coluna — resolve a definição de cada campo da coleta
   // (a coleta guarda só os rótulos escolhidos na criação; a definição vem do objeto/registro).
   const fieldDefsForCollection = (collection: Collection): FieldDefinition[] => {
-    const object = allObjects.find((item) => item.code === collection.objectCode);
     const cycle = cycles.find((item) => item.id === collection.cycleId);
-    const defs = object ? fieldsFor(object) : [];
-    return (cycle?.metadataLabels ?? []).map(
-      (label) =>
-        defs.find((field) => field.label === label) ?? {
-          id: label,
+    if (!cycle) return [];
+    return cycle.metadataIds.map((fieldId, index) => {
+      const label = cycle.metadataLabels[index] ?? fieldId;
+      return (
+        fieldCatalogForCycles.find((field) => field.id === fieldId) ?? {
+          id: fieldId,
           label,
           type: "Texto",
           hint: "Preencha conforme o pedido da STC.",
           required: false,
-        },
-    );
+        }
+      );
+    });
   };
   const activeCycle = cycles.find((cycle) => cycle.id === activeCycleId) ?? cycles[0];
+  const editingCycle = cycles.find((cycle) => cycle.id === editingCycleId) ?? null;
   const activeCollection =
     collections.find((item) => item.id === activeCollectionId) ?? collections[0];
   const linkCollection = collections.find((item) => item.id === linkCollectionId) ?? collections[0];
@@ -5283,6 +6281,10 @@ export default function App() {
   }, [role, view, objectId, activeCycleId, activeCollectionId]);
 
   useEffect(() => {
+    if (view !== "stc-create") setEditingCycleId("");
+  }, [view]);
+
+  useEffect(() => {
     if (!toast) return;
     const timer = window.setTimeout(() => setToast(""), 2600);
     return () => window.clearTimeout(timer);
@@ -5291,7 +6293,7 @@ export default function App() {
   const setRoleAndReset = (nextRole: Role) => {
     setRole(nextRole);
     setProfileOpen(false);
-    if (nextRole === "stc") setView("stc-dashboard");
+    if (isStcRole(nextRole)) setView("stc-home");
     if (nextRole === "ponto-focal") setView("focal-dashboard");
     if (nextRole === "respondente")
       setView(currentRespondentId ? "resp-dashboard" : "resp-general-access");
@@ -5544,70 +6546,264 @@ export default function App() {
     );
   };
 
-  const activateCycle = () => {
-    if (!selectedObject) return;
-    const cycleNumber = 100 + cycles.length;
-    const cycleId = `ciclo-${cycleNumber}`;
-    const selectedFields = fieldsFor(selectedObject).filter((field) =>
+  const submitCycleForReview = () => {
+    const isFixed = draft.kind === "fixo";
+    if (
+      !createKind ||
+      (isFixed && !selectedObject) ||
+      (!isFixed && (!draft.variableObjectCode || !draft.variableObjectName.trim())) ||
+      !selectedUgs.length ||
+      !selectedMetadataIds.length ||
+      !draft.title.trim() ||
+      !draft.notificationChannel.trim()
+    )
+      return;
+    const objectCode = isFixed ? selectedObject!.code : draft.variableObjectCode;
+    const objectName = isFixed ? titleCase(selectedObject!.name) : draft.variableObjectName.trim();
+    const selectedFields = fieldCatalogForCycles.filter((field) =>
       selectedMetadataIds.includes(field.id),
     );
-    // §2.3: boxes vazios não viram exigência.
     const requiredAttachments = draft.requiredAttachments.map((item) => item.trim()).filter(Boolean);
-    const newCollections: Collection[] = selectedUgs.map((ugId) => ({
-      id: `col-${cycleNumber}-${ugId}`,
-      cycleId,
-      objectCode: selectedObject.code,
-      objectName: titleCase(selectedObject.name),
-      kind: draft.kind,
-      ugId,
-      linkToken: `agz-${cycleNumber}-${ugId}`,
-      requiredAttachments,
-      attachmentJustifications: [],
-      submissions: [],
-    }));
+
+    if (editingCycle) {
+      const nextDraft: CycleReviewDraft = {
+        title: draft.title.trim(),
+        objectCode,
+        objectName,
+        objectKind: draft.kind,
+        deadline: draft.deadline,
+        seiNumber: draft.seiNumber,
+        ugIds: [...selectedUgs],
+        metadataIds: [...selectedMetadataIds],
+        requiredAttachments,
+        requiresFocalPointValidation: draft.requiresFocalPointValidation,
+        creationObservations: draft.observations,
+        notificationChannel: draft.notificationChannel.trim(),
+      };
+      const changes = describeReviewChanges(editingCycle, nextDraft);
+      const wasReturned = editingCycle.creationStatus === "ajustes-solicitados";
+      setCycles(
+        cycles.map((cycle) =>
+          cycle.id === editingCycle.id
+            ? {
+                ...cycle,
+                ...nextDraft,
+                metadataLabels: selectedFields.map((field) => field.label),
+                spreadsheetStatus: "pending-approval",
+                creationStatus: "aguardando-analise",
+                lastUpdatedAt: today,
+                lastUpdatedBy: "Analista STC",
+                reviewHistory: [
+                  ...cycle.reviewHistory,
+                  {
+                    id: `${cycle.id}-analista-${cycle.reviewHistory.length + 1}`,
+                    type: wasReturned ? "reenviado" : "alterado",
+                    author: "Analista STC",
+                    date: today,
+                    message: wasReturned
+                      ? "Ajustes concluídos e ciclo reenviado para análise."
+                      : "Configuração atualizada enquanto aguardava análise.",
+                    changes,
+                  },
+                ],
+              }
+            : cycle,
+        ),
+      );
+      setToast(wasReturned ? "Ciclo reenviado para análise" : "Alterações salvas para análise");
+      setView("stc-dashboard");
+      return;
+    }
+
+    const cycleNumber = 100 + cycles.length;
+    const cycleId = `ciclo-${cycleNumber}`;
     const cycle: CycleItem = {
       id: cycleId,
-      title: draft.title,
-      objectCode: selectedObject.code,
-      objectName: titleCase(selectedObject.name),
+      title: draft.title.trim(),
+      objectCode,
+      objectName,
       objectKind: draft.kind,
       createdAt: today,
+      createdAtIso: new Date().toISOString(),
       deadline: draft.deadline,
       status: "ativo",
       seiNumber: draft.seiNumber,
       ugIds: [...selectedUgs],
       metadataLabels: selectedFields.map((field) => field.label),
-      collectionIds: newCollections.map((item) => item.id),
+      metadataIds: selectedFields.map((field) => field.id),
+      collectionIds: [],
       requiresFocalPointValidation: draft.requiresFocalPointValidation,
       requiredAttachments,
+      creationStatus: "aguardando-analise",
+      creationObservations: draft.observations,
+      notificationChannel: draft.notificationChannel.trim(),
+      lastUpdatedAt: today,
+      lastUpdatedBy: "Analista STC",
+      reviewHistory: [
+        {
+          id: `${cycleId}-enviado-1`,
+          type: "enviado",
+          author: "Analista STC",
+          date: today,
+          message: "Ciclo enviado para análise da criação.",
+          changes: [],
+        },
+      ],
+      spreadsheetStatus: "pending-approval",
     };
     setCycles([...cycles, cycle]);
-    setCollections([...collections, ...newCollections]);
-    setLinkCollectionId(newCollections[0].id);
     setActiveCycleId(cycleId);
     setCreateKind(null);
     setObjectId("");
-    setView("stc-cycle-detail");
+    setToast("Ciclo enviado para análise da criação");
+    setView("stc-dashboard");
+  };
+
+  const openCycleCreation = (cycleId: string) => {
+    const cycle = cycles.find((item) => item.id === cycleId);
+    const object = cycle ? allObjects.find((item) => item.code === cycle.objectCode) : null;
+    if (
+      !cycle ||
+      (cycle.objectKind === "fixo" && !object) ||
+      cycle.creationStatus === "aprovado"
+    )
+      return;
+    setEditingCycleId(cycle.id);
+    setCreateKind(cycle.objectKind);
+    setObjectId(object?.id ?? "");
+    setSelectedUgs([...cycle.ugIds]);
+    setSelectedMetadataIds([...cycle.metadataIds]);
+    setDraft({
+      title: cycle.title,
+      deadline: cycle.deadline,
+      seiNumber: cycle.seiNumber,
+      observations: cycle.creationObservations,
+      notificationChannel: cycle.notificationChannel,
+      kind: cycle.objectKind,
+      variableObjectCode: cycle.objectKind === "variavel" ? cycle.objectCode : "",
+      variableObjectName: cycle.objectKind === "variavel" ? cycle.objectName : "",
+      requiredAttachments: [...cycle.requiredAttachments],
+      requiresFocalPointValidation: cycle.requiresFocalPointValidation,
+    });
+    setView("stc-create");
+  };
+
+  const reviewCycleCreation = (
+    cycleId: string,
+    reviewDraft: CycleReviewDraft,
+    action: "salvar" | "ajustes" | "aprovar",
+    message: string,
+  ) => {
+    const cycle = cycles.find((item) => item.id === cycleId);
+    const object =
+      reviewDraft.objectKind === "fixo"
+        ? allObjects.find((item) => item.code === reviewDraft.objectCode)
+        : null;
+    if (
+      !cycle ||
+      (reviewDraft.objectKind === "fixo" && !object) ||
+      (reviewDraft.objectKind === "variavel" && !reviewDraft.objectName.trim()) ||
+      cycle.creationStatus === "aprovado"
+    )
+      return;
+
+    const normalizedDraft: CycleReviewDraft = {
+      ...reviewDraft,
+      title: reviewDraft.title.trim(),
+      objectName:
+        reviewDraft.objectKind === "fixo" ? titleCase(object!.name) : reviewDraft.objectName.trim(),
+      objectKind: reviewDraft.objectKind,
+      requiredAttachments: reviewDraft.requiredAttachments.map((item) => item.trim()).filter(Boolean),
+      notificationChannel: reviewDraft.notificationChannel.trim(),
+    };
+    const fields = fieldCatalogForCycles.filter((field) =>
+      normalizedDraft.metadataIds.includes(field.id),
+    );
+    const changes = describeReviewChanges(cycle, normalizedDraft);
+    const event: CycleReviewEvent = {
+      id: `${cycle.id}-especialista-${cycle.reviewHistory.length + 1}`,
+      type: action === "ajustes" ? "ajustes-solicitados" : action === "aprovar" ? "aprovado" : "alterado",
+      author: "Especialista STC",
+      date: today,
+      message:
+        action === "ajustes"
+          ? message
+          : action === "aprovar"
+            ? "Criação aprovada; coletas geradas e enviadas às UGs."
+            : "Alterações da análise salvas.",
+      changes,
+    };
+    const reviewedCycle: CycleItem = {
+      ...cycle,
+      ...normalizedDraft,
+      metadataLabels: fields.map((field) => field.label),
+      spreadsheetStatus:
+        action === "aprovar"
+          ? normalizedDraft.objectKind === "variavel"
+            ? "generated"
+            : "fixed-template-pending"
+          : cycle.spreadsheetStatus,
+      creationStatus:
+        action === "ajustes" ? "ajustes-solicitados" : action === "aprovar" ? "aprovado" : cycle.creationStatus,
+      lastUpdatedAt: today,
+      lastUpdatedBy: "Especialista STC",
+      reviewHistory: [...cycle.reviewHistory, event],
+    };
+
+    if (action === "aprovar") {
+      const cycleNumber = cycle.id.replace("ciclo-", "");
+      const newCollections: Collection[] = normalizedDraft.ugIds
+        .map((ugId) => ({
+          id: `col-${cycleNumber}-${ugId}`,
+          cycleId: cycle.id,
+          objectCode: normalizedDraft.objectCode,
+          objectName: normalizedDraft.objectName,
+          kind: normalizedDraft.objectKind,
+          ugId,
+          linkToken: `agz-${cycleNumber}-${ugId}`,
+          requiredAttachments: [...normalizedDraft.requiredAttachments],
+          attachmentJustifications: [],
+          submissions: [],
+        }))
+        .filter((collection) => !collections.some((item) => item.id === collection.id));
+      reviewedCycle.collectionIds = newCollections.map((collection) => collection.id);
+      reviewedCycle.status = "ativo";
+      setCollections([...collections, ...newCollections]);
+      if (newCollections[0]) setLinkCollectionId(newCollections[0].id);
+      setActiveCycleId(cycle.id);
+      setToast("Ciclo aprovado e enviado às UGs");
+    } else if (action === "ajustes") {
+      setToast("Ajustes solicitados ao analista");
+    } else {
+      setToast("Alterações do especialista registradas");
+    }
+
+    setCycles(cycles.map((item) => (item.id === cycle.id ? reviewedCycle : item)));
+    setReviewCycleId(cycle.id);
   };
 
   const handleKindChange = (kind: ObjectKind) => {
+    if (kind === createKind) return;
     setCreateKind(kind);
     setObjectId("");
     setSelectedUgs([]);
     setSelectedMetadataIds([]);
+    setDraft(
+      kind === "variavel"
+        ? draftForVariable(nextVariableCode(cycles))
+        : { ...draftForObject(defaultObject), seiNumber: draft.seiNumber },
+    );
   };
 
   const handleObjectChange = (id: string) => {
     const nextObject = allObjects.find((item) => item.id === id);
     if (!nextObject || !createKind) return;
+    const availableFields = fieldsFor(nextObject);
     setObjectId(id);
-    setSelectedUgs([...nextObject.suggestedUgs]);
-    setSelectedMetadataIds(fieldsFor(nextObject).map((field) => field.id));
+    setSelectedUgs([]);
+    setSelectedMetadataIds(requiredFieldIdsForObject(nextObject, availableFields));
     setDraft({
       ...draftForObject(nextObject),
-      kind: createKind,
-      // §2.3: fixo chega com os anexos do registro; variável começa com UM box vazio para digitar o título.
-      requiredAttachments: createKind === "fixo" ? attachmentsFor("fixo", nextObject.code) : [""],
       seiNumber: draft.seiNumber,
     });
   };
@@ -6020,13 +7216,29 @@ export default function App() {
       );
     }
 
+    if (!isStcRole(role)) return null;
+
+    if (view === "stc-home") {
+      return <StcHome role={role} setView={setView} />;
+    }
+
+    if (view === "stc-create" && role !== "stc-analista") {
+      return <StcHome role={role} setView={setView} />;
+    }
+
+    if (view === "stc-creation-review" && role !== "stc-especialista") {
+      return <StcHome role={role} setView={setView} />;
+    }
+
     if (view === "stc-create") {
       return (
         <StcCreateCycle
           kind={createKind}
           onKindChange={handleKindChange}
           object={selectedObject ? { ...selectedObject, fields: fieldsFor(selectedObject) } : null}
-          objects={allObjects}
+          objects={allObjects.map((object) => ({ ...object, fields: fieldsFor(object) }))}
+          fieldCatalog={fieldCatalogForCycles}
+          attachments={attachmentCatalog}
           ugList={ugList}
           onObjectChange={handleObjectChange}
           selectedUgs={selectedUgs}
@@ -6035,7 +7247,22 @@ export default function App() {
           setSelectedMetadataIds={setSelectedMetadataIds}
           draft={draft}
           setDraft={setDraft}
-          onActivate={activateCycle}
+          editingCycle={editingCycle}
+          onSubmit={submitCycleForReview}
+        />
+      );
+    }
+
+    if (view === "stc-creation-review") {
+      return (
+        <StcCreationReview
+          cycles={cycles}
+          objects={allObjects.map((object) => ({ ...object, fields: fieldsFor(object) }))}
+          ugList={ugList}
+          fieldCatalog={fieldCatalogForCycles}
+          attachments={attachmentCatalog}
+          initialCycleId={reviewCycleId}
+          onReview={reviewCycleCreation}
         />
       );
     }
@@ -6091,6 +7318,7 @@ export default function App() {
 
     return (
       <StcDashboard
+        role={role}
         cycles={cycles}
         collections={collections}
         ugList={ugList}
@@ -6100,7 +7328,14 @@ export default function App() {
           setView("stc-cycle-detail");
         }}
         openValidation={openValidation}
-        openCreate={() => setView("stc-create")}
+        openCreation={(cycleId) => {
+          if (role === "stc-analista") {
+            openCycleCreation(cycleId);
+          } else {
+            setReviewCycleId(cycleId);
+            setView("stc-creation-review");
+          }
+        }}
         updateSei={(cycleId, value) =>
           setCycles(cycles.map((cycle) => (cycle.id === cycleId ? { ...cycle, seiNumber: value } : cycle)))
         }
@@ -6109,14 +7344,14 @@ export default function App() {
   })();
 
   return (
-    <div className={`app-shell ${role === "stc" ? "stc-accent" : ""}`}>
+    <div className={`app-shell ${isStcRole(role) ? "stc-accent" : ""}`}>
       <TopBar
         role={role}
         setRole={setRoleAndReset}
         respondentInitial={currentRespondent ? currentRespondent.name.charAt(0) : "R"}
         onProfileClick={() => setProfileOpen(true)}
       />
-      <div className={role === "login" ? "login-only" : `workspace ${role === "stc" ? "" : "ug-workspace"}`}>
+      <div className={role === "login" ? "login-only" : `workspace ${isStcRole(role) ? "" : "ug-workspace"}`}>
         <Sidebar role={role} view={view} setView={setView} />
         <main className="content">{page}</main>
       </div>

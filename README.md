@@ -12,19 +12,26 @@ npm run dev
 ## Validação
 
 ```bash
-npm run test:prototype   # smoke test estrutural (node:test, sem dependências)
-npm run build            # tsc + vite build
+npm run test:prototype   # smoke test estrutural (node:test)
+npm run test:behavior    # fluxos reais com Vitest + Testing Library
+npm run test:all         # smoke + comportamento
+npm run build            # TypeScript + Vite
 ```
 
 ## O que o protótipo cobre (v8)
 
 - Hierarquia **Ciclo × Coleta**: um ciclo gera uma coleta por órgão, cada uma com link próprio (tipo Forms) anexado ao SEI.
-- Três perfis: **STC** (criação de ciclo, validação e comprovantes), **ponto focal** do órgão (validação opcional por toggle e pré-cadastro de respondentes) e **respondente técnico** (cadastro híbrido com validação de e-mail).
+- Quatro visões: **Analista STC** (criação e acompanhamento), **Especialista STC** (aprovação e validação), **ponto focal** do órgão (validação opcional por toggle e pré-cadastro de respondentes) e **respondente técnico** (cadastro híbrido com validação de e-mail).
+- A barra lateral da STC mantém apenas **Painel STC**, **Histórico** e **Registro**; criar, aprovar e acompanhar ciclos são ações do painel.
 - Envio por **planilha-padrão + anexos obrigatórios** com checklist, rascunho, **resposta negativa** ("não tenho esta informação") e comprovante de envio.
 - **Checagem estrutural** apenas — anexos presentes + estrutura da planilha; o conteúdo das células não é lido.
-- Objeto **fixo × variável** (variável gera a planilha a partir dos campos escolhidos), estados próprios de ciclo/coleta (incl. "não enviado no prazo") e observações encadeadas na validação.
+- Objeto **fixo × variável**: o catálogo fixo contém os 41 objetos de coleta manual do Tesauro; os 8 automatizados ficam fora. Campos e anexos explicitamente obrigatórios são pré-selecionados por objeto; o variável começa vazio e gera a planilha a partir dos campos escolhidos.
+- Estados próprios de ciclo/coleta (incl. "não enviado no prazo") e observações encadeadas na validação.
 
 ## Notas
 
 - O SEI permanece o canal formal; a plataforma é paralela — nada retorna ao SEI automaticamente.
+- O Tesauro não contém o mapeamento oficial informação↔órgão; por segurança, nenhuma UG é presumida na criação.
+- Modelos fixos permanecem bloqueados até o arquivo oficial de cada `MT-*` ser vinculado; somente objetos variáveis geram uma planilha no protótipo.
+- `src/tesauroData.ts` é versionado. O gerador de manutenção espera a planilha-fonte fora deste repositório público, em `../DocumentosAdcionais/levantamento de requisitos/`.
 - Os documentos internos de contexto do projeto (`docs/`) não são versionados neste repositório público.

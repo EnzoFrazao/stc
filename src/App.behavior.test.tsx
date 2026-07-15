@@ -48,6 +48,63 @@ function expectSelectableUrlInCopyCard(copyButton: HTMLElement) {
   expect(visibleUrl.closest("button")).toBeNull();
 }
 
+type StcHomeAction = "Criar Ciclo" | "Aprovar Ciclo" | "Acompanhar ciclos";
+
+async function openStcHomeAction(
+  user: ReturnType<typeof userEvent.setup>,
+  action: StcHomeAction,
+) {
+  await user.click(screen.getByRole("button", { name: "Painel STC" }));
+  await user.click(
+    within(screen.getByLabelText("Ações do perfil STC")).getByRole("button", {
+      name: new RegExp(action, "i"),
+    }),
+  );
+}
+
+async function openVariableDemoAsJoao(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByRole("button", { name: "Entrar como respondente" }));
+  await user.type(screen.getByLabelText("E-mail do respondente"), "joao.lima@seduc.ma.gov.br");
+  await user.type(screen.getByLabelText("Senha do respondente"), "senha-simulada");
+  await user.click(screen.getByRole("button", { name: "Acessar minhas coletas" }));
+  const title = screen.getByText("VAR-0000 · Demonstração variável", { selector: "strong" });
+  const card = title.closest("article");
+  expect(card).toBeTruthy();
+  await user.click(within(card as HTMLElement).getByRole("button", { name: "Responder coleta" }));
+}
+
+function expectCurrentStcNavigation(label: "Painel STC" | "Histórico" | "Registro") {
+  const navigation = screen.getByRole("navigation", { name: "Navegação STC" });
+  const currentItem = within(navigation).getByRole("button", { name: label });
+  expect(currentItem.getAttribute("aria-current")).toBe("page");
+  expect(
+    within(navigation)
+      .getAllByRole("button")
+      .filter((item) => item.getAttribute("aria-current") === "page"),
+  ).toEqual([currentItem]);
+}
+
+async function createCycleForReview(
+  user: ReturnType<typeof userEvent.setup>,
+  title: string,
+) {
+  await openStcHomeAction(user, "Criar Ciclo");
+  await user.click(screen.getByRole("button", { name: /Objeto fixo/i }));
+  await user.click(screen.getByRole("button", { name: /MT-0016\s+Estagiário/i }));
+  await user.click(screen.getByRole("button", { name: /SEDUC Secretaria de Estado da Educação/ }));
+  await user.click(screen.getByRole("button", { name: /SAF Secretaria de Administração/ }));
+  const titleInput = screen.getByLabelText("Título");
+  fireEvent.change(titleInput, { target: { value: title } });
+  await user.click(screen.getByRole("button", { name: "Enviar ciclo para análise" }));
+}
+
+function cycleCard(title: string) {
+  const titleNode = screen.getByText(title, { selector: "strong" });
+  const card = titleNode.closest("article");
+  expect(card).toBeTruthy();
+  return within(card as HTMLElement);
+}
+
 describe("Agiliza Transparência", () => {
   test("contagem permite mínimo e excedente", () => {
     expect(attachmentsMeetRequirement(2, 3)).toBe(false);
@@ -114,13 +171,7 @@ describe("Agiliza Transparência", () => {
   test("stepper anuncia semanticamente a etapa atual", async () => {
     const user = userEvent.setup();
     render(<App />);
-    await user.click(screen.getByRole("button", { name: "Abrir link da coleta (SEI)" }));
-    await user.type(
-      screen.getByPlaceholderText("ex.: joao.lima@seduc.ma.gov.br"),
-      "joao.lima@seduc.ma.gov.br",
-    );
-    await user.type(screen.getByLabelText("Senha"), "senha-simulada");
-    await user.click(screen.getByRole("button", { name: "Entrar" }));
+    await openVariableDemoAsJoao(user);
 
     const firstStep = screen.getByRole("button", { name: "1 Como responder" });
     const secondStep = screen.getByRole("button", { name: "2 Preencher e subir" });
@@ -135,13 +186,7 @@ describe("Agiliza Transparência", () => {
   test("drop usa somente o nome simulado e ignora o arquivo real", async () => {
     const user = userEvent.setup();
     render(<App />);
-    await user.click(screen.getByRole("button", { name: "Abrir link da coleta (SEI)" }));
-    await user.type(
-      screen.getByPlaceholderText("ex.: joao.lima@seduc.ma.gov.br"),
-      "joao.lima@seduc.ma.gov.br",
-    );
-    await user.type(screen.getByLabelText("Senha"), "senha-simulada");
-    await user.click(screen.getByRole("button", { name: "Entrar" }));
+    await openVariableDemoAsJoao(user);
     await user.click(screen.getByRole("button", { name: /Preencher e subir/ }));
 
     const dropInstruction = screen.getByText("Arraste aqui ou clique para simular a seleção");
@@ -154,20 +199,14 @@ describe("Agiliza Transparência", () => {
     fireEvent.dragOver(dropzone as HTMLElement, { dataTransfer: { files: [realFile] } });
     fireEvent.drop(dropzone as HTMLElement, { dataTransfer: { files: [realFile] } });
 
-    expect(screen.getByText("mt-0016_seduc_preenchida.xlsx")).toBeTruthy();
+    expect(screen.getByText("var-0000_seduc_preenchida.xlsx")).toBeTruthy();
     expect(screen.queryByText("arquivo-real-sentinela.xlsx")).toBeNull();
   });
 
-  test("faixa estrutural só usa sucesso com planilha e anexos completos", async () => {
+  test("faixa estrutural aceita zero anexos exigidos e ainda reprova planilha fora do modelo", async () => {
     const user = userEvent.setup();
     render(<App />);
-    await user.click(screen.getByRole("button", { name: "Abrir link da coleta (SEI)" }));
-    await user.type(
-      screen.getByPlaceholderText("ex.: joao.lima@seduc.ma.gov.br"),
-      "joao.lima@seduc.ma.gov.br",
-    );
-    await user.type(screen.getByLabelText("Senha"), "senha-simulada");
-    await user.click(screen.getByRole("button", { name: "Entrar" }));
+    await openVariableDemoAsJoao(user);
     await user.click(screen.getByRole("button", { name: /Preencher e subir/ }));
 
     const qualityStrip = () =>
@@ -181,15 +220,6 @@ describe("Agiliza Transparência", () => {
     await user.click(
       screen.getByRole("button", { name: /Arraste aqui ou clique para simular a seleção/ }),
     );
-    expect(qualityStrip().classList.contains("warning")).toBe(true);
-    expect(qualityStrip().classList.contains("success")).toBe(false);
-
-    await user.click(screen.getByRole("button", { name: /Anexos obrigatórios/ }));
-    const addAttachment = screen.getByRole("button", { name: "Enviar arquivo" });
-    await user.click(addAttachment);
-    await user.click(addAttachment);
-    await user.click(addAttachment);
-    await user.click(screen.getByRole("button", { name: /Preencher e subir/ }));
     expect(qualityStrip().classList.contains("success")).toBe(true);
 
     await user.click(screen.getByLabelText("Simular planilha fora do modelo (colunas divergentes)"));
@@ -197,17 +227,232 @@ describe("Agiliza Transparência", () => {
     expect(qualityStrip().classList.contains("success")).toBe(false);
   });
 
-  test("renderiza as três portas institucionais", () => {
+  test("login separa a STC entre analista e especialista", () => {
     render(<App />);
     expect(screen.getByRole("button", { name: "Entrar como ponto focal" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Entrar como STC" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Entrar como Analista STC" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Entrar como Especialista STC" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Entrar como STC" })).toBeNull();
     expect(screen.getByRole("button", { name: "Abrir link da coleta (SEI)" })).toBeTruthy();
+  });
+
+  test.each(["Analista STC", "Especialista STC"] as const)(
+    "sidebar de %s mantém somente os destinos persistentes",
+    async (profile) => {
+      const user = userEvent.setup();
+      render(<App />);
+
+      await user.click(screen.getByRole("button", { name: `Entrar como ${profile}` }));
+
+      const navigation = screen.getByRole("navigation", { name: "Navegação STC" });
+      expect(
+        within(navigation)
+          .getAllByRole("button")
+          .map((button) => button.textContent?.trim()),
+      ).toEqual(["Painel STC", "Histórico", "Registro"]);
+      expectCurrentStcNavigation("Painel STC");
+    },
+  );
+
+  test("analista recebe somente Criar Ciclo e Acompanhar ciclos na home", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Entrar como Analista STC" }));
+
+    expect(screen.getByRole("heading", { name: "Painel STC" })).toBeTruthy();
+    const actions = within(screen.getByLabelText("Ações do perfil STC"));
+    expect(actions.getByRole("button", { name: /Criar Ciclo/ })).toBeTruthy();
+    expect(actions.getByRole("button", { name: /Acompanhar ciclos/ })).toBeTruthy();
+    expect(actions.queryByRole("button", { name: /Aprovar Ciclo/ })).toBeNull();
+  });
+
+  test("especialista recebe somente Aprovar Ciclo e Acompanhar ciclos na home", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Entrar como Especialista STC" }));
+
+    expect(screen.getByRole("heading", { name: "Painel STC" })).toBeTruthy();
+    const actions = within(screen.getByLabelText("Ações do perfil STC"));
+    expect(actions.getByRole("button", { name: /Aprovar Ciclo/ })).toBeTruthy();
+    expect(actions.getByRole("button", { name: /Acompanhar ciclos/ })).toBeTruthy();
+    expect(actions.queryByRole("button", { name: /Criar Ciclo/ })).toBeNull();
+    expect(actions.queryByRole("button", { name: /Análise da criação/ })).toBeNull();
+  });
+
+  test("telas operacionais do analista mantêm Painel STC como destino atual", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Entrar como Analista STC" }));
+
+    await openStcHomeAction(user, "Criar Ciclo");
+    expectCurrentStcNavigation("Painel STC");
+
+    await openStcHomeAction(user, "Acompanhar ciclos");
+    expectCurrentStcNavigation("Painel STC");
+    const operationalCycle = cycleCard("Coleta MT-0018 - Licitação");
+    await user.click(operationalCycle.getByRole("button", { name: "Exibir detalhes" }));
+    expectCurrentStcNavigation("Painel STC");
+
+    await openStcHomeAction(user, "Acompanhar ciclos");
+    await user.click(cycleCard("Coleta MT-0018 - Licitação").getByRole("button", { name: "Validar respostas" }));
+    expectCurrentStcNavigation("Painel STC");
+  });
+
+  test("aprovação de ciclos mantém Painel STC como destino atual", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Entrar como Especialista STC" }));
+
+    await openStcHomeAction(user, "Aprovar Ciclo");
+    expectCurrentStcNavigation("Painel STC");
+  });
+
+  test("especialista continua validando respostas recebidas das UGs", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Entrar como Especialista STC" }));
+    await openStcHomeAction(user, "Acompanhar ciclos");
+
+    const operationalCycle = cycleCard("Coleta MT-0018 - Licitação");
+    await user.click(operationalCycle.getByRole("button", { name: "Validar respostas" }));
+    expect(screen.getByRole("heading", { name: "Receber, aprovar ou rejeitar" })).toBeTruthy();
+    expect(screen.getAllByRole("button", { name: "Aprovar resposta" }).length).toBeGreaterThan(0);
+  });
+
+  test("analista envia ciclo para análise sem gerar coletas ou links", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Entrar como Analista STC" }));
+
+    await createCycleForReview(user, "Ciclo para revisão sem links");
+
+    const card = cycleCard("Ciclo para revisão sem links");
+    expect(card.getByText("Aguardando análise da criação")).toBeTruthy();
+    expect(card.getByText("Ainda não enviado às UGs")).toBeTruthy();
+    expect(card.queryByRole("button", { name: /Copiar link/ })).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "Ponto focal" }));
+    expect(screen.queryByText("Ciclo para revisão sem links")).toBeNull();
+  });
+
+  test("filtro da análise não mantém no detalhe um ciclo fora do status selecionado", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Entrar como Especialista STC" }));
+    await openStcHomeAction(user, "Aprovar Ciclo");
+
+    expect(screen.getByRole("heading", { name: "0 ciclo(s)" })).toBeTruthy();
+    expect(screen.queryByText("Configuração completa")).toBeNull();
+
+    await user.selectOptions(screen.getByLabelText("Status da análise"), "aprovado");
+    expect(screen.getByText("Configuração completa")).toBeTruthy();
+
+    await user.selectOptions(screen.getByLabelText("Status da análise"), "ajustes-solicitados");
+    expect(screen.getByRole("heading", { name: "0 ciclo(s)" })).toBeTruthy();
+    expect(screen.queryByText("Configuração completa")).toBeNull();
+  });
+
+  test("analista continua editando enquanto o ciclo aguarda análise", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Entrar como Analista STC" }));
+    await createCycleForReview(user, "Ciclo editável em análise");
+
+    await user.click(cycleCard("Ciclo editável em análise").getByRole("button", { name: "Editar ciclo" }));
+    const titleInput = screen.getByLabelText("Título");
+    await user.clear(titleInput);
+    await user.type(titleInput, "Ciclo atualizado pelo analista");
+    await user.click(screen.getByRole("button", { name: "Salvar e manter em análise" }));
+
+    await user.click(screen.getByRole("button", { name: "Especialista STC" }));
+    await openStcHomeAction(user, "Aprovar Ciclo");
+    expect(screen.getByRole("button", { name: "Analisar Ciclo atualizado pelo analista" })).toBeTruthy();
+  });
+
+  test("especialista exige observação para solicitar ajustes e o analista pode reenviar", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Entrar como Analista STC" }));
+    await createCycleForReview(user, "Ciclo que precisa de ajustes");
+
+    await user.click(screen.getByRole("button", { name: "Especialista STC" }));
+    await openStcHomeAction(user, "Aprovar Ciclo");
+    await user.click(screen.getByRole("button", { name: "Analisar Ciclo que precisa de ajustes" }));
+    await user.click(screen.getByRole("button", { name: "Solicitar ajustes" }));
+    expect(screen.getByRole("alert").textContent).toContain("Escreva uma observação");
+
+    await user.type(screen.getByLabelText("Observação para o analista"), "Revise as UGs selecionadas.");
+    await user.click(screen.getByRole("button", { name: "Solicitar ajustes" }));
+
+    await user.click(screen.getByRole("button", { name: "Analista STC" }));
+    await openStcHomeAction(user, "Acompanhar ciclos");
+    const card = cycleCard("Ciclo que precisa de ajustes");
+    expect(card.getByText("Ajustes solicitados")).toBeTruthy();
+    expect(card.getByText("Revise as UGs selecionadas.")).toBeTruthy();
+    await user.click(card.getByRole("button", { name: "Revisar ajustes" }));
+    expect(screen.getByRole("button", { name: "Reenviar para análise" })).toBeTruthy();
+  });
+
+  test("alteração do especialista registra os valores anterior e novo", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Entrar como Analista STC" }));
+    await createCycleForReview(user, "Ciclo antes da edição especializada");
+
+    await user.click(screen.getByRole("button", { name: "Especialista STC" }));
+    await openStcHomeAction(user, "Aprovar Ciclo");
+    await user.click(screen.getByRole("button", { name: "Analisar Ciclo antes da edição especializada" }));
+    const titleInput = screen.getByLabelText("Título do ciclo em análise");
+    fireEvent.change(titleInput, { target: { value: "Ciclo revisado pelo especialista" } });
+    const channelInput = screen.getByLabelText("Canal de notificação");
+    fireEvent.change(channelInput, { target: { value: "Portal institucional" } });
+    const observationsInput = screen.getByLabelText("Observações da criação");
+    fireEvent.change(observationsInput, {
+      target: { value: "Orientação revisada pelo especialista." },
+    });
+    await user.click(screen.getByRole("button", { name: "Termo de Recebimento" }));
+    await user.click(screen.getByRole("button", { name: /SEDUC Secretaria de Estado da Educação/ }));
+    await user.click(screen.getByRole("button", { name: "Fonte Oficial URL ou arquivo" }));
+    await user.click(screen.getByRole("button", { name: "Salvar alterações" }));
+
+    expect(
+      screen.getByText('Título: "Ciclo antes da edição especializada" → "Ciclo revisado pelo especialista"'),
+    ).toBeTruthy();
+    expect(screen.getByText('Canal: "Email" → "Portal institucional"')).toBeTruthy();
+    expect(screen.getByText(/Observações: ".+" → "Orientação revisada pelo especialista\."/)).toBeTruthy();
+    expect(screen.getByText('UGs: "seduc, saf" → "saf"')).toBeTruthy();
+    expect(screen.getByText(/^Campos obrigatórios: ".+" → ".+"$/)).toBeTruthy();
+    expect(screen.getByText('Anexos obrigatórios: "nenhum" → "Termo de Recebimento"')).toBeTruthy();
+  });
+
+  test("aprovação do especialista gera uma coleta por UG e ativa o ciclo uma única vez", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Entrar como Analista STC" }));
+    await createCycleForReview(user, "Ciclo pronto para aprovação");
+
+    await user.click(screen.getByRole("button", { name: "Especialista STC" }));
+    await openStcHomeAction(user, "Aprovar Ciclo");
+    await user.click(screen.getByRole("button", { name: "Analisar Ciclo pronto para aprovação" }));
+    await user.click(screen.getByRole("button", { name: "Aprovar e enviar às UGs" }));
+    expect(screen.queryByRole("button", { name: "Aprovar e enviar às UGs" })).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "Analista STC" }));
+    await openStcHomeAction(user, "Acompanhar ciclos");
+    const card = cycleCard("Ciclo pronto para aprovação");
+    expect(card.getByText("Ativo")).toBeTruthy();
+    expect(card.getAllByRole("button", { name: /Copiar link da coleta/ })).toHaveLength(2);
+
+    await user.click(screen.getByRole("button", { name: "Ponto focal" }));
+    expect(screen.getByText("Ciclo pronto para aprovação")).toBeTruthy();
   });
 
   test("Registro edita dados básicos do objeto fixo", async () => {
     const user = userEvent.setup();
     render(<App />);
-    await user.click(screen.getByRole("button", { name: "Entrar como STC" }));
+    await user.click(screen.getByRole("button", { name: "Entrar como Analista STC" }));
     await user.click(screen.getByRole("button", { name: "Registro" }));
     await user.click(screen.getByRole("button", { name: "Editar MT-0016" }));
     const name = screen.getByLabelText("Nome do objeto");
@@ -216,32 +461,29 @@ describe("Agiliza Transparência", () => {
     await user.click(screen.getByRole("button", { name: "Salvar objeto" }));
     expect(screen.getByText("MT-0016 · Estagiários Estaduais")).toBeTruthy();
 
-    await user.click(screen.getByRole("button", { name: "Criar coleta" }));
+    await openStcHomeAction(user, "Criar Ciclo");
     await user.click(screen.getByRole("button", { name: /Objeto fixo/i }));
     const updatedObject = screen.getByRole("button", {
       name: /MT-0016\s+Estagiários Estaduais/i,
     });
     expect(updatedObject).toBeTruthy();
     await user.click(updatedObject);
-    await user.click(
-      screen.getByRole("button", { name: "Acionar e gerar links das coletas" }),
-    );
+    await user.click(screen.getByRole("button", { name: /SEDUC Secretaria de Estado da Educação/ }));
+    await user.click(screen.getByRole("button", { name: "Enviar ciclo para análise" }));
 
-    expect(
-      screen.getByRole("heading", { name: "Coleta MT-0016 - Estagiários Estaduais" }),
-    ).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "Estagiários Estaduais" })).toBeTruthy();
-    expect(screen.getAllByRole("button", { name: "Simular acesso pelo link" })).toHaveLength(2);
+    const createdCycle = cycleCard("Ciclo MT-0016 - Estagiários Estaduais");
+    expect(createdCycle.getByText("Aguardando análise da criação")).toBeTruthy();
+    expect(createdCycle.queryByRole("button", { name: /Copiar link da coleta/ })).toBeNull();
   });
 
   test("Registro invalida a seleção editada antes de reconstruir o rascunho", async () => {
     const user = userEvent.setup();
     render(<App />);
-    await user.click(screen.getByRole("button", { name: "Entrar como STC" }));
-    await user.click(screen.getByRole("button", { name: "Criar coleta" }));
+    await user.click(screen.getByRole("button", { name: "Entrar como Analista STC" }));
+    await openStcHomeAction(user, "Criar Ciclo");
     await user.click(screen.getByRole("button", { name: /Objeto fixo/i }));
     await user.click(screen.getByRole("button", { name: /MT-0016\s+Estagiário/i }));
-    expect(screen.getByDisplayValue("Coleta MT-0016 - Estagiário")).toBeTruthy();
+    expect(screen.getByDisplayValue("Ciclo MT-0016 - Estagiário")).toBeTruthy();
 
     await user.click(screen.getByRole("button", { name: "Registro" }));
     await user.click(screen.getByRole("button", { name: "Editar MT-0016" }));
@@ -259,18 +501,18 @@ describe("Agiliza Transparência", () => {
     await user.type(updatedRegistry.getByPlaceholderText("Adicionar anexo ao registro"), "Anexo atualizado");
     await user.click(updatedRegistry.getByRole("button", { name: "Adicionar" }));
 
-    await user.click(screen.getByRole("button", { name: "Criar coleta" }));
-    expect(screen.queryByDisplayValue("Coleta MT-0016 - Estagiário")).toBeNull();
+    await openStcHomeAction(user, "Criar Ciclo");
+    expect(screen.queryByDisplayValue("Ciclo MT-0016 - Estagiário")).toBeNull();
     const updatedObject = screen.getByRole("button", { name: /MT-0099\s+Estagiários Estaduais/i });
     await user.click(updatedObject);
-    expect(screen.getByDisplayValue("Coleta MT-0099 - Estagiários Estaduais")).toBeTruthy();
-    expect(screen.getByDisplayValue("Anexo atualizado")).toBeTruthy();
+    expect(screen.getByDisplayValue("Ciclo MT-0099 - Estagiários Estaduais")).toBeTruthy();
+    expect(screen.queryByDisplayValue("Anexo atualizado")).toBeNull();
   });
 
   test("Registro migra campos e anexos quando o código do objeto muda", async () => {
     const user = userEvent.setup();
     render(<App />);
-    await user.click(screen.getByRole("button", { name: "Entrar como STC" }));
+    await user.click(screen.getByRole("button", { name: "Entrar como Analista STC" }));
     await user.click(screen.getByRole("button", { name: "Registro" }));
 
     await user.click(screen.getByRole("button", { name: "Campos / informações" }));
@@ -285,6 +527,11 @@ describe("Agiliza Transparência", () => {
     await user.click(screen.getByRole("button", { name: "Adicionar campo" }));
 
     await user.click(screen.getByRole("button", { name: "Objetos fixos" }));
+    const originalRow = screen.getByRole("button", { name: "Editar MT-0016" }).closest("article");
+    expect(originalRow).toBeTruthy();
+    const originalRegistry = within(originalRow as HTMLElement);
+    await user.type(originalRegistry.getByPlaceholderText("Adicionar anexo ao registro"), "Anexo migrado");
+    await user.click(originalRegistry.getByRole("button", { name: "Adicionar" }));
     await user.click(screen.getByRole("button", { name: "Editar MT-0016" }));
     const code = screen.getByLabelText("Código do objeto");
     const subject = screen.getByLabelText("Tema do objeto");
@@ -299,16 +546,16 @@ describe("Agiliza Transparência", () => {
 
     expect(screen.getByText("MT-0099 · Estagiário")).toBeTruthy();
     expect(screen.getByText(/Gestão de pessoas · Trimestral/)).toBeTruthy();
-    expect(screen.getByText("Termo de compromisso do estágio")).toBeTruthy();
+    expect(screen.getByText("Anexo migrado")).toBeTruthy();
 
     await user.click(screen.getByRole("button", { name: "Campos / informações" }));
     expect(screen.getByRole("option", { name: /MT-0099/ })).toBeTruthy();
     expect(screen.getByText("Campo migrado")).toBeTruthy();
 
-    await user.click(screen.getByRole("button", { name: "Criar coleta" }));
+    await openStcHomeAction(user, "Criar Ciclo");
     await user.click(screen.getByRole("button", { name: /Objeto fixo/i }));
     await user.click(screen.getByRole("button", { name: /MT-0099\s+Estagiário/i }));
-    expect(screen.getByDisplayValue("Termo de compromisso do estágio")).toBeTruthy();
+    expect(screen.queryByDisplayValue("Anexo migrado")).toBeNull();
 
     await user.click(screen.getByRole("button", { name: "Registro" }));
     await user.click(screen.getByRole("button", { name: "Cadastrar objeto fixo" }));
@@ -327,7 +574,7 @@ describe("Agiliza Transparência", () => {
   test("Registro edita objeto cadastrado localmente", async () => {
     const user = userEvent.setup();
     render(<App />);
-    await user.click(screen.getByRole("button", { name: "Entrar como STC" }));
+    await user.click(screen.getByRole("button", { name: "Entrar como Analista STC" }));
     await user.click(screen.getByRole("button", { name: "Registro" }));
     await user.click(screen.getByRole("button", { name: "Cadastrar objeto fixo" }));
     await user.type(screen.getByLabelText("Código"), "MT-0098");
@@ -375,7 +622,7 @@ describe("Agiliza Transparência", () => {
   test("Registro rejeita criação com código já ocupado", async () => {
     const user = userEvent.setup();
     render(<App />);
-    await user.click(screen.getByRole("button", { name: "Entrar como STC" }));
+    await user.click(screen.getByRole("button", { name: "Entrar como Analista STC" }));
     await user.click(screen.getByRole("button", { name: "Registro" }));
     await user.click(screen.getByRole("button", { name: "Cadastrar objeto fixo" }));
     await user.type(screen.getByLabelText("Código"), "mt-0016");
@@ -393,7 +640,7 @@ describe("Agiliza Transparência", () => {
   test("Registro rejeita código de objeto duplicado", async () => {
     const user = userEvent.setup();
     render(<App />);
-    await user.click(screen.getByRole("button", { name: "Entrar como STC" }));
+    await user.click(screen.getByRole("button", { name: "Entrar como Analista STC" }));
     await user.click(screen.getByRole("button", { name: "Registro" }));
     await user.click(screen.getByRole("button", { name: "Editar MT-0016" }));
     const code = screen.getByLabelText("Código do objeto");
@@ -408,7 +655,7 @@ describe("Agiliza Transparência", () => {
   test("Registro edita a sigla da UG sem romper suas referências", async () => {
     const user = userEvent.setup();
     render(<App />);
-    await user.click(screen.getByRole("button", { name: "Entrar como STC" }));
+    await user.click(screen.getByRole("button", { name: "Entrar como Analista STC" }));
     await user.click(screen.getByRole("button", { name: "Registro" }));
     await user.click(screen.getByRole("button", { name: "UGs" }));
     await user.click(screen.getByRole("button", { name: "Editar SEDUC" }));
@@ -421,7 +668,7 @@ describe("Agiliza Transparência", () => {
     await user.clear(acronym);
     await user.type(acronym, "SEDUC-NOVA");
     await user.click(screen.getByRole("button", { name: "Salvar alterações" }));
-    await user.click(screen.getByRole("button", { name: "Painel STC" }));
+    await openStcHomeAction(user, "Acompanhar ciclos");
     const seducCycle = screen.getByText("Coleta MT-0016 - Estagiário").closest("article");
     expect(seducCycle).toBeTruthy();
     expect(within(seducCycle as HTMLElement).getByText("SEDUC-NOVA")).toBeTruthy();
@@ -430,7 +677,7 @@ describe("Agiliza Transparência", () => {
   test("Registro rejeita cadastro de UG com sigla ou identificador já ocupado", async () => {
     const user = userEvent.setup();
     render(<App />);
-    await user.click(screen.getByRole("button", { name: "Entrar como STC" }));
+    await user.click(screen.getByRole("button", { name: "Entrar como Analista STC" }));
     await user.click(screen.getByRole("button", { name: "Registro" }));
     await user.click(screen.getByRole("button", { name: "UGs" }));
     await user.click(screen.getByRole("button", { name: "Cadastrar UG" }));
@@ -450,7 +697,7 @@ describe("Agiliza Transparência", () => {
   test("Registro mantém IDs distintos ao remover e readicionar campos com o mesmo rótulo", async () => {
     const user = userEvent.setup();
     render(<App />);
-    await user.click(screen.getByRole("button", { name: "Entrar como STC" }));
+    await user.click(screen.getByRole("button", { name: "Entrar como Analista STC" }));
     await user.click(screen.getByRole("button", { name: "Registro" }));
     await user.click(screen.getByRole("button", { name: "Campos / informações" }));
     await user.selectOptions(
@@ -493,7 +740,7 @@ describe("Agiliza Transparência", () => {
   test("Topbar abre a entrada geral do respondente sem sessão", async () => {
     const user = userEvent.setup();
     render(<App />);
-    await user.click(screen.getByRole("button", { name: "Entrar como STC" }));
+    await user.click(screen.getByRole("button", { name: "Entrar como Analista STC" }));
     await user.click(screen.getByRole("button", { name: "Respondente" }));
 
     expect(
@@ -517,19 +764,20 @@ describe("Agiliza Transparência", () => {
   test("painel orienta quando nenhum filtro encontra coleta", async () => {
     const user = userEvent.setup();
     render(<App />);
-    await user.click(screen.getByRole("button", { name: "Entrar como STC" }));
+    await user.click(screen.getByRole("button", { name: "Entrar como Analista STC" }));
+    await openStcHomeAction(user, "Acompanhar ciclos");
     const overdueFilter = screen.getByRole("button", { name: "Não enviado no prazo" });
     await user.click(overdueFilter);
     expect(overdueFilter.getAttribute("aria-pressed")).toBe("true");
     await user.selectOptions(screen.getByLabelText("Objeto"), "MT-0016");
 
-    expect(screen.getByText("Nenhuma coleta combina com estes filtros")).toBeTruthy();
+    expect(screen.getByText("Nenhum ciclo combina com estes filtros")).toBeTruthy();
   });
 
   test("Histórico inclui as duas extremidades do período", async () => {
     const user = userEvent.setup();
     render(<App />);
-    await user.click(screen.getByRole("button", { name: "Entrar como STC" }));
+    await user.click(screen.getByRole("button", { name: "Entrar como Analista STC" }));
     await user.click(screen.getByRole("button", { name: "Histórico" }));
     await user.type(screen.getByLabelText("Período inicial"), "2026-07-04");
     await user.type(screen.getByLabelText("Período final"), "2026-07-04");
@@ -541,7 +789,7 @@ describe("Agiliza Transparência", () => {
   test("Histórico orienta quando os filtros não encontram registros", async () => {
     const user = userEvent.setup();
     render(<App />);
-    await user.click(screen.getByRole("button", { name: "Entrar como STC" }));
+    await user.click(screen.getByRole("button", { name: "Entrar como Analista STC" }));
     await user.click(screen.getByRole("button", { name: "Histórico" }));
     await user.type(
       screen.getByPlaceholderText("objeto, título ou nº do SEI"),
@@ -556,7 +804,7 @@ describe("Agiliza Transparência", () => {
   test("Registro orienta quando a lista de campos fica vazia", async () => {
     const user = userEvent.setup();
     render(<App />);
-    await user.click(screen.getByRole("button", { name: "Entrar como STC" }));
+    await user.click(screen.getByRole("button", { name: "Entrar como Analista STC" }));
     await user.click(screen.getByRole("button", { name: "Registro" }));
     await user.click(screen.getByRole("button", { name: "Campos / informações" }));
 
@@ -574,7 +822,8 @@ describe("Agiliza Transparência", () => {
 
     try {
       render(<App />);
-      await user.click(screen.getByRole("button", { name: "Entrar como STC" }));
+      await user.click(screen.getByRole("button", { name: "Entrar como Analista STC" }));
+      await openStcHomeAction(user, "Acompanhar ciclos");
       const copyButton = screen.getAllByRole("button", { name: /^Copiar link da coleta da / })[0];
       expectSelectableUrlInCopyCard(copyButton);
       await user.click(copyButton);
@@ -600,7 +849,8 @@ describe("Agiliza Transparência", () => {
 
     try {
       render(<App />);
-      await user.click(screen.getByRole("button", { name: "Entrar como STC" }));
+      await user.click(screen.getByRole("button", { name: "Entrar como Analista STC" }));
+      await openStcHomeAction(user, "Acompanhar ciclos");
       const copyButton = screen.getAllByRole("button", { name: /^Copiar link da coleta da / })[0];
       expectSelectableUrlInCopyCard(copyButton);
       await user.click(copyButton);
@@ -627,7 +877,8 @@ describe("Agiliza Transparência", () => {
 
     try {
       render(<App />);
-      await user.click(screen.getByRole("button", { name: "Entrar como STC" }));
+      await user.click(screen.getByRole("button", { name: "Entrar como Analista STC" }));
+      await openStcHomeAction(user, "Acompanhar ciclos");
       await user.click(screen.getAllByRole("button", { name: /^Copiar link da coleta da / })[0]);
 
       const feedback = await screen.findByRole("status");
@@ -656,7 +907,8 @@ describe("Agiliza Transparência", () => {
 
     try {
       render(<App />);
-      await user.click(screen.getByRole("button", { name: "Entrar como STC" }));
+      await user.click(screen.getByRole("button", { name: "Entrar como Analista STC" }));
+      await openStcHomeAction(user, "Acompanhar ciclos");
       await user.click(screen.getAllByRole("button", { name: /^Copiar link da coleta da / })[0]);
 
       expect(calls).toEqual([firstCollectionUrl]);
@@ -809,29 +1061,37 @@ describe("comprovantes", () => {
   test("preserva envio, rejeição, reenvio e fechamento na mesma timeline", async () => {
     const user = userEvent.setup();
     render(<App />);
-    const claraSubmissionCard = () =>
-      screen.getAllByText("Clara Nunes")[0].closest(".submission-card");
+    const joaoSubmissionCard = () =>
+      screen.getAllByText("João Lima")[0].closest(".submission-card");
 
-    await user.click(screen.getByRole("button", { name: "Entrar como STC" }));
-    let cycleCard = screen.getByText("Coleta MT-0018 - Licitação").closest("article");
+    await openVariableDemoAsJoao(user);
+    await user.click(screen.getByRole("button", { name: /Preencher e subir/ }));
+    await user.click(
+      screen.getByRole("button", { name: /Arraste aqui ou clique para simular a seleção/ }),
+    );
+    await user.click(screen.getByRole("button", { name: "Enviar e gerar comprovante" }));
+
+    await user.click(screen.getByRole("button", { name: "Analista STC" }));
+    await openStcHomeAction(user, "Acompanhar ciclos");
+    let cycleCard = screen.getByText("Coleta VAR-0000 - Demonstração variável").closest("article");
     expect(cycleCard).toBeTruthy();
     await user.click(
       within(cycleCard as HTMLElement).getByRole("button", { name: "Validar respostas" }),
     );
 
-    let claraCard = claraSubmissionCard();
-    expect(claraCard).toBeTruthy();
-    const rejectionReason = within(claraCard as HTMLElement).getByLabelText(
+    let joaoCard = joaoSubmissionCard();
+    expect(joaoCard).toBeTruthy();
+    const rejectionReason = within(joaoCard as HTMLElement).getByLabelText(
       "Justificativa da rejeicao",
     );
     await user.type(rejectionReason, "Corrigir o período informado.");
     await user.click(
-      within(claraCard as HTMLElement).getByRole("button", { name: "Rejeitar envio" }),
+      within(joaoCard as HTMLElement).getByRole("button", { name: "Rejeitar envio" }),
     );
 
-    claraCard = claraSubmissionCard();
-    expect(claraCard).toBeTruthy();
-    let timeline = within(claraCard as HTMLElement).getByLabelText(
+    joaoCard = joaoSubmissionCard();
+    expect(joaoCard).toBeTruthy();
+    let timeline = within(joaoCard as HTMLElement).getByLabelText(
       "Histórico de comprovantes",
     );
     expect(within(timeline).getAllByText("Comprovante de envio")).toHaveLength(1);
@@ -839,12 +1099,6 @@ describe("comprovantes", () => {
     expect(within(timeline).getByText("2 evento(s) registrado(s)")).toBeTruthy();
 
     await user.click(screen.getByRole("button", { name: "Respondente" }));
-    await user.type(
-      screen.getByLabelText("E-mail do respondente"),
-      "clara.nunes@sinfra.ma.gov.br",
-    );
-    await user.type(screen.getByLabelText("Senha do respondente"), "senha-simulada");
-    await user.click(screen.getByRole("button", { name: "Acessar minhas coletas" }));
     await user.click(screen.getByRole("button", { name: "Corrigir envio" }));
     await user.click(screen.getByRole("button", { name: "Reenviar corrigido" }));
 
@@ -853,27 +1107,28 @@ describe("comprovantes", () => {
     expect(within(timeline).getAllByText("Comprovante de rejeição")).toHaveLength(1);
     expect(within(timeline).getByText("3 evento(s) registrado(s)")).toBeTruthy();
 
-    await user.click(screen.getByRole("button", { name: "STC" }));
-    cycleCard = screen.getByText("Coleta MT-0018 - Licitação").closest("article");
+    await user.click(screen.getByRole("button", { name: "Analista STC" }));
+    await openStcHomeAction(user, "Acompanhar ciclos");
+    cycleCard = screen.getByText("Coleta VAR-0000 - Demonstração variável").closest("article");
     expect(cycleCard).toBeTruthy();
     await user.click(
       within(cycleCard as HTMLElement).getByRole("button", { name: "Validar respostas" }),
     );
-    claraCard = claraSubmissionCard();
-    expect(claraCard).toBeTruthy();
+    joaoCard = joaoSubmissionCard();
+    expect(joaoCard).toBeTruthy();
     await user.click(
-      within(claraCard as HTMLElement).getByRole("button", { name: "Aprovar resposta" }),
+      within(joaoCard as HTMLElement).getByRole("button", { name: "Aprovar resposta" }),
     );
 
-    claraCard = claraSubmissionCard();
-    expect(claraCard).toBeTruthy();
-    timeline = within(claraCard as HTMLElement).getByLabelText(
+    joaoCard = joaoSubmissionCard();
+    expect(joaoCard).toBeTruthy();
+    timeline = within(joaoCard as HTMLElement).getByLabelText(
       "Histórico de comprovantes",
     );
     expect(within(timeline).getAllByText("Comprovante de envio")).toHaveLength(2);
     expect(within(timeline).getAllByText("Comprovante de rejeição")).toHaveLength(1);
     expect(within(timeline).getAllByText("Comprovante de fechamento")).toHaveLength(1);
-    expect(within(timeline).getAllByText("AG-2026-00032")).toHaveLength(4);
+    expect(within(timeline).getAllByText("AG-2026-00034")).toHaveLength(4);
     expect(
       within(timeline)
         .getAllByRole("listitem")
@@ -887,7 +1142,7 @@ describe("comprovantes", () => {
 
     await user.click(screen.getByRole("button", { name: "Respondente" }));
     const collectionCard = screen
-      .getByText(/MT-0018\s*·\s*Licitação/i)
+      .getByText(/VAR-0000\s*·\s*Demonstração variável/i)
       .closest("article");
     expect(collectionCard).toBeTruthy();
     await user.click(

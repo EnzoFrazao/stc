@@ -13,33 +13,24 @@ WORKBOOK = ROOT.parent / "DocumentosAdcionais" / "levantamento de requisitos" / 
 OUTPUT = ROOT / "src" / "tesauroData.ts"
 
 
-SUBJECT_UGS = {
-    "Institucional": ["seduc", "saf", "sinfra", "sefaz"],
-    "Gestão Fiscal": ["sefaz", "saf"],
-    "Obras e Infraestrutura": ["sinfra", "saf"],
-    "Pessoal": ["saf", "seduc"],
-    "Licitações e Contratos": ["seduc", "saf", "sinfra", "sefaz"],
-    "Planejamento e Resultados": ["sefaz", "saf", "seduc"],
-    "Transparência Passiva": ["sefaz", "seduc"],
-    "Emendas Parlamentares": ["sefaz", "saf"],
-    "Controle e Integridade": ["sefaz", "saf"],
-    "Convênios e Transferências": ["saf", "seduc", "sinfra"],
-    "Dados Abertos": ["seduc", "saf", "sinfra", "sefaz"],
+ATTACHMENT_LABELS = [
+    "Termo de Recebimento",
+    "Anexo de Metas Fiscais",
+    "Anexo de Riscos Fiscais",
+    "Plano de Trabalho",
+    "Relatório de Prestação de Contas",
+]
+
+MANDATORY_ATTACHMENTS_BY_OBJECT = {
+    "MT-0013": ["Termo de Recebimento"],
+    "MT-0022": ["Anexo de Metas Fiscais", "Anexo de Riscos Fiscais"],
+    "MT-0034": ["Plano de Trabalho"],
 }
 
-
-OBJECT_UGS = {
-    "OBRA": ["sinfra", "saf"],
-    "LICITAÇÃO": ["seduc", "saf", "sinfra", "sefaz"],
-    "CONTRATO": ["seduc", "saf", "sinfra", "sefaz"],
-    "TRABALHADOR": ["saf", "seduc"],
-    "ESTAGIÁRIO": ["saf", "seduc"],
-    "OUVIDORIA": ["sefaz"],
-    "PEDIDO DE INFORMAÇÃO": ["sefaz", "seduc"],
-    "DÍVIDA ATIVA": ["sefaz"],
-    "ORDEM BANCÁRIA": ["sefaz", "saf"],
-    "EMENDA": ["sefaz", "saf"],
-    "CONVÊNIO": ["saf", "seduc", "sinfra"],
+MANDATORY_ATTACHMENT_EVIDENCE = {
+    "MT-0013": "Termo de recebimento é documento obrigatório",
+    "MT-0022": "Anexo de Metas Fiscais e o Anexo de Riscos Fiscais são partes obrigatórias",
+    "MT-0034": "Anexar o plano de trabalho aprovado",
 }
 
 
@@ -64,13 +55,6 @@ def field_type(label: str) -> str:
     return "Texto"
 
 
-def suggested_ugs(subject: str, name: str) -> list[str]:
-    for key, values in OBJECT_UGS.items():
-        if key in name:
-            return values
-    return SUBJECT_UGS.get(subject, ["seduc", "saf", "sinfra", "sefaz"])
-
-
 def clean(value) -> str:
     if value is None:
         return ""
@@ -80,6 +64,19 @@ def clean(value) -> str:
 def main() -> None:
     workbook = openpyxl.load_workbook(WORKBOOK, data_only=True, read_only=True)
     objects = []
+    fields_by_id = {}
+
+    unknown_attachment_labels = {
+        label
+        for labels in MANDATORY_ATTACHMENTS_BY_OBJECT.values()
+        for label in labels
+        if label not in ATTACHMENT_LABELS
+    }
+    if unknown_attachment_labels:
+        raise ValueError(
+            "Mandatory attachments missing from ATTACHMENT_LABELS: "
+            + ", ".join(sorted(unknown_attachment_labels))
+        )
 
     for worksheet in workbook.worksheets[1:]:
         subject = worksheet.title
@@ -89,54 +86,107 @@ def main() -> None:
                 continue
 
             flow = clean(row[11])
-            if "Coleta manual" not in flow and "Maranhão Transparente" not in flow:
+            if "Coleta manual" not in flow:
                 continue
 
-            metadata_labels = [
-                item.strip()
-                for item in re.split(r"\n+", clean(row[8]))
-                if item.strip() and "──" not in item
-            ]
-            fields = [
-                {
-                    "id": slug(label),
-                    "label": label,
-                    "type": field_type(label),
-                    "hint": f"Campo obrigatório do Tesauro para {clean(row[1]).title()}.",
-                    "required": True,
-                }
-                for label in metadata_labels
-            ]
-
+            metadata_labels = []
+            required_metadata_labels = []
+            variable_metadata_section = False
+            for raw_label in re.split(r"\n+", clean(row[8])):
+                label = raw_label.strip()
+                if not label:
+                    continue
+                section_marker = (
+                    unicodedata.normalize("NFKD", label)
+                    .encode("ascii", "ignore")
+                    .decode("ascii")
+                    .upper()
+                )
+                if "METADADOS VARIAVEIS" in section_marker:
+                    variable_metadata_section = True
+                    continue
+                if "METADADOS FIXOS" in section_marker:
+                    variable_metadata_section = False
+                    continue
+                metadata_labels.append(label)
+                if not variable_metadata_section:
+                    required_metadata_labels.append(label)
             name = clean(row[1])
+            code = clean(row[0])
+            scope_note = clean(row[7])
+            attachment_labels = MANDATORY_ATTACHMENTS_BY_OBJECT.get(code, [])
+            evidence = MANDATORY_ATTACHMENT_EVIDENCE.get(code)
+            if evidence and evidence.casefold() not in scope_note.casefold():
+                raise ValueError(
+                    f"Mandatory attachment evidence changed for {code}: {evidence!r}"
+                )
+            field_ids = []
+            for label in metadata_labels:
+                field_id = slug(label)
+                field_ids.append(field_id)
+                fields_by_id.setdefault(
+                    field_id,
+                    {
+                        "id": field_id,
+                        "label": label,
+                        "type": field_type(label),
+                        "hint": "Campo obrigatório definido pelo Tesauro.",
+                        "required": True,
+                    },
+                )
+            required_field_ids = [slug(label) for label in required_metadata_labels]
+
             objects.append(
                 {
                     "id": slug(f"{row[0]}-{name}"),
-                    "code": clean(row[0]),
+                    "code": code,
                     "name": name,
+                    "kind": "fixo",
                     "subject": subject,
                     "cadence": clean(row[10]),
                     "format": clean(row[13]) or clean(row[12]) or "Formato a definir",
                     "source": "Tesauro",
                     "description": clean(row[6]),
-                    "scopeNote": clean(row[7]),
+                    "scopeNote": scope_note,
                     "collectionSource": clean(row[12]),
                     "publication": clean(row[14]),
                     "legalBasis": clean(row[15]),
                     "status": clean(row[16]) or "Ativo",
-                    "suggestedUgs": suggested_ugs(subject, name),
-                    "fields": fields,
+                    "suggestedUgs": [],
+                    "attachmentIds": [slug(label) for label in attachment_labels],
+                    "fieldIds": field_ids,
+                    "requiredFieldIds": required_field_ids,
+                    "fields": [fields_by_id[field_id] for field_id in field_ids],
                 }
             )
 
+    fields = list(fields_by_id.values())
+    attachments = [{"id": slug(label), "label": label} for label in ATTACHMENT_LABELS]
+
     content = (
-        "export const tesauroObjects = "
+        "export const tesauroFields = "
+        + json.dumps(fields, ensure_ascii=False, indent=2)
+        + " as const;\n\n"
+        + "export const tesauroAttachments = "
+        + json.dumps(attachments, ensure_ascii=False, indent=2)
+        + " as const;\n\n"
+        + "export const tesauroObjects = "
         + json.dumps(objects, ensure_ascii=False, indent=2)
         + " as const;\n\n"
+        + "export type TesauroFieldData = (typeof tesauroFields)[number];\n"
+        + "export type TesauroAttachmentData = (typeof tesauroAttachments)[number];\n"
         + "export type TesauroObjectData = (typeof tesauroObjects)[number];\n"
     )
     OUTPUT.write_text(content, encoding="utf-8")
-    print(f"Wrote {OUTPUT} with {len(objects)} objects")
+    assignments = sum(len(item["fieldIds"]) for item in objects)
+    required_assignments = sum(len(item["requiredFieldIds"]) for item in objects)
+    mandatory_attachment_assignments = sum(len(item["attachmentIds"]) for item in objects)
+    print(
+        f"Wrote {OUTPUT} with {len(objects)} objects, "
+        f"{len(fields)} fields, {assignments} field assignments, "
+        f"{required_assignments} initially required assignments and "
+        f"{mandatory_attachment_assignments} mandatory attachment assignments"
+    )
 
 
 if __name__ == "__main__":
