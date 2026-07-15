@@ -20,13 +20,15 @@ npm run build            # TypeScript + Vite
 
 ## O que o protótipo cobre (v8)
 
-- Hierarquia **Ciclo × Coleta**: um ciclo gera uma coleta por órgão, cada uma com link próprio (tipo Forms) anexado ao SEI.
-- Quatro visões: **Analista STC** (criação e acompanhamento), **Especialista STC** (aprovação e validação), **ponto focal** do órgão (validação opcional por toggle e pré-cadastro de respondentes) e **respondente técnico** (cadastro híbrido com validação de e-mail).
+- Hierarquia **Ciclo × Coletas individuais**: a STC destina um ciclo a uma ou mais UGs e publica um link único; cada respondente — ou o próprio ponto focal — passa a ter sua coleta dentro do ciclo quando assume a resposta. A aprovação não cria coletas vazias por órgão.
+- Quatro visões: **Analista STC** (criação e acompanhamento), **Especialista STC** (aprovação e validação), **ponto focal** do órgão (ciclos e coletas somente da própria UG, validação opcional por toggle, pré-cadastro e resposta institucional) e **respondente técnico** (somente as próprias coletas).
+- Login único por e-mail e senha; o primeiro cadastro do respondente acontece no contexto do link do ciclo, com validações simuladas de e-mail/UG.
+- Ponto focal e respondente possuem orientação contextual permanente à direita no desktop e acima do conteúdo no mobile.
 - A barra lateral da STC mantém apenas **Painel STC**, **Histórico** e **Registro**; criar, aprovar e acompanhar ciclos são ações do painel.
 - Envio por **planilha-padrão + anexos obrigatórios** com checklist, rascunho, **resposta negativa** ("não tenho esta informação") e comprovante de envio.
 - **Checagem estrutural** apenas — anexos presentes + estrutura da planilha; o conteúdo das células não é lido.
 - Objeto **fixo × variável**: o catálogo fixo contém os 41 objetos de coleta manual do Tesauro; os 8 automatizados ficam fora. Campos e anexos explicitamente obrigatórios são pré-selecionados por objeto; o variável começa vazio e gera a planilha a partir dos campos escolhidos.
-- Estados próprios de ciclo/coleta (incl. "não enviado no prazo") e observações encadeadas na validação.
+- Estados próprios de ciclo/coleta (incl. "não enviado no prazo"), fechamento terminal por UG, cobertura de todas as UGs antes da finalização global e observações encadeadas na validação.
 
 ## Notas
 

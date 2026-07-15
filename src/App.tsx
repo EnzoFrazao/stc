@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { tesauroAttachments, tesauroFields, tesauroObjects } from "./tesauroData";
 
 type StcRole = "stc-analista" | "stc-especialista";
@@ -13,29 +13,26 @@ type View =
   | "stc-history"
   | "stc-registry"
   | "focal-dashboard"
-  | "focal-cycle-detail"
+  | "focal-collection-detail"
   | "resp-access"
-  | "resp-general-access"
   | "resp-dashboard"
   | "resp-collection";
 type ObjectKind = "fixo" | "variavel";
 type SpreadsheetStatus = "pending-approval" | "fixed-template-pending" | "generated";
 type CreationReviewStatus = "aguardando-analise" | "ajustes-solicitados" | "aprovado";
-export type SubmissionStatus =
+export type CollectionStatus =
   | "pendente"
   | "rascunho"
-  | "enviado"
   | "aguardando-ponto-focal"
-  | "reaberto"
-  | "aprovado"
-  | "resposta-negativa";
+  | "aguardando-stc"
+  | "em-correcao"
+  | "aprovada";
 export type CycleStatus =
-  | "ativo"
-  | "aguardando-ponto-focal"
-  | "aguardando-analise-stc" // antigo respondido (verde) — agora amarelo: há resposta nova para a STC analisar (§1.2)
-  | "correcao"
+  | "em-andamento"
   | "finalizado"
-  | "nao-enviado-no-prazo";
+  | "sem-envio-no-prazo";
+export type CollectionOwnerType = "respondente" | "ponto-focal";
+export type ResponseKind = "dados" | "indisponibilidade";
 type Tone = "info" | "success" | "warning" | "danger" | "neutral" | "orange";
 type StepState = "done" | "active" | "todo";
 type StepDefinition = [string, StepState];
@@ -87,7 +84,7 @@ interface Ug {
   profile: string;
 }
 
-interface SubmissionObservation {
+interface CollectionObservation {
   author: string;
   date: string;
   text: string;
@@ -95,7 +92,7 @@ interface SubmissionObservation {
 
 export type ReceiptKind = "envio" | "rejeicao" | "fechamento";
 
-export interface SubmissionReceipt {
+export interface CollectionReceipt {
   id: string;
   kind: ReceiptKind;
   protocol: string;
@@ -111,39 +108,27 @@ export function createReceipt(
   date: string,
   position: number,
   summary: string,
-): SubmissionReceipt {
+): CollectionReceipt {
   return { id: `${protocol}-${kind}-${position + 1}`, kind, protocol, author, date, summary };
 }
 
-interface Submission {
+export interface Collection {
   id: string;
-  collectionId: string;
-  respondentId: string;
-  respondentName: string;
-  status: SubmissionStatus;
+  cycleId: string;
+  ugId: string;
+  ownerType: CollectionOwnerType;
+  ownerId: string;
+  ownerName: string;
+  status: CollectionStatus;
+  responseKind: ResponseKind;
   protocol: string;
   fileName: string;
   attachments: string[];
   rejectionReason: string;
   submittedAt: string;
-  isNegative: boolean;
-  observations: SubmissionObservation[]; // encadeadas com autor + data (§3.8)
-  receipts: SubmissionReceipt[];
-}
-
-// TODO(P-019): assumido 1 coleta = 1 objeto, por órgão (pendência aberta na STC).
-export interface Collection {
-  id: string;
-  cycleId: string;
-  objectCode: string;
-  objectName: string;
-  kind: ObjectKind;
-  ugId: string;
-  linkToken: string; // hash do link que vai no SEI (L1)
-  requiredAttachments: string[];
-  // Justificativas "não tenho todos os anexos" — registro de mão única preso à coleta, não é chat.
-  attachmentJustifications: SubmissionObservation[];
-  submissions: Submission[];
+  observations: CollectionObservation[];
+  receipts: CollectionReceipt[];
+  attachmentJustifications: CollectionObservation[];
 }
 
 interface Respondent {
@@ -153,9 +138,19 @@ interface Respondent {
   phone: string;
   role: string; // cargo
   ugId: string;
+  password: string;
   createdBySelf: boolean;
   emailVerified: boolean;
-  collectionIds: string[]; // coletas em que foi adicionado ou às quais chegou pelo link (§3.3)
+}
+
+interface FocalSignal {
+  id: string;
+  cycleId: string;
+  ugId: string;
+  kind: "duvida" | "informacao-indisponivel";
+  message: string;
+  author: string;
+  createdAt: string;
 }
 
 interface CycleReviewEvent {
@@ -178,9 +173,9 @@ export interface CycleItem {
   deadline: string;
   status: CycleStatus;
   seiNumber: string;
+  linkToken: string;
   ugIds: string[];
   metadataLabels: string[];
-  collectionIds: string[];
   requiresFocalPointValidation: boolean; // toggle P2
   requiredAttachments: string[];
   metadataIds: string[];
@@ -240,11 +235,15 @@ const transparencyObjects = tesauroObjects as readonly TransparencyObject[];
 const canonicalFields = tesauroFields as readonly FieldDefinition[];
 const attachmentCatalog = tesauroAttachments as readonly AttachmentDefinition[];
 
-function requiredAttachmentsForObject(object: TransparencyObject): string[] {
+function requiredAttachmentsForObject(
+  object: TransparencyObject,
+  registeredAttachments: readonly string[] = [],
+): string[] {
   const attachmentIds = new Set(object.attachmentIds ?? []);
-  return attachmentCatalog
+  const tesauroLabels = attachmentCatalog
     .filter((attachment) => attachmentIds.has(attachment.id))
     .map((attachment) => attachment.label);
+  return Array.from(new Set([...tesauroLabels, ...registeredAttachments]));
 }
 
 function requiredFieldIdsForObject(
@@ -329,8 +328,6 @@ const seedUgs: Ug[] = [
   },
 ];
 
-const focalUser = { name: "Maria Costa", ugId: "seduc" };
-
 const seedRespondents: Respondent[] = [
   {
     id: "resp-joao",
@@ -339,9 +336,9 @@ const seedRespondents: Respondent[] = [
     phone: "(98) 98801-2214",
     role: "Setor de Contratos",
     ugId: "seduc",
+    password: "senha-simulada",
     createdBySelf: false,
     emailVerified: true,
-    collectionIds: ["col-100-seduc", "col-demo-variable-seduc"],
   },
   {
     id: "resp-clara",
@@ -350,9 +347,9 @@ const seedRespondents: Respondent[] = [
     phone: "(98) 98214-7702",
     role: "Setor de Obras",
     ugId: "sinfra",
+    password: "senha-simulada",
     createdBySelf: true,
     emailVerified: true,
-    collectionIds: ["col-101-sinfra", "col-103-sinfra"],
   },
   {
     id: "resp-otavio",
@@ -361,9 +358,9 @@ const seedRespondents: Respondent[] = [
     phone: "(98) 98455-1980",
     role: "Comissão de Licitação",
     ugId: "sinfra",
+    password: "senha-simulada",
     createdBySelf: false,
     emailVerified: true,
-    collectionIds: ["col-101-sinfra"],
   },
   {
     id: "resp-paulo",
@@ -372,9 +369,9 @@ const seedRespondents: Respondent[] = [
     phone: "(98) 98120-3345",
     role: "TI da Ouvidoria",
     ugId: "sefaz",
+    password: "senha-simulada",
     createdBySelf: true,
     emailVerified: true,
-    collectionIds: ["col-102-sefaz", "col-104-sefaz"],
   },
 ];
 
@@ -387,71 +384,71 @@ const objectMt0015 = objectByCode("MT-0015");
 const seedCycles: CycleItem[] = ([
   {
     id: "ciclo-100",
-    title: `Coleta ${defaultObject.code} - ${titleCase(defaultObject.name)}`,
+    title: `Ciclo ${defaultObject.code} - ${titleCase(defaultObject.name)}`,
     objectCode: defaultObject.code,
     objectName: titleCase(defaultObject.name),
     objectKind: "fixo",
     createdAt: "07 jul. 2026",
     deadline: "2026-07-15",
-    status: "ativo",
+    status: "em-andamento",
     seiNumber: "2026.000431/STC",
+    linkToken: "agz-ciclo-100",
     ugIds: ["seduc", "saf"],
     metadataLabels: defaultObject.fields.map((field) => field.label),
-    collectionIds: ["col-100-seduc", "col-100-saf"],
     requiresFocalPointValidation: true,
     requiredAttachments: [],
   },
   {
     id: "ciclo-101",
-    title: `Coleta ${objectMt0018.code} - ${titleCase(objectMt0018.name)}`,
+    title: `Ciclo ${objectMt0018.code} - ${titleCase(objectMt0018.name)}`,
     objectCode: objectMt0018.code,
     objectName: titleCase(objectMt0018.name),
     objectKind: "fixo",
     createdAt: "04 jul. 2026",
     deadline: "2026-07-18",
-    status: "aguardando-analise-stc",
+    status: "em-andamento",
     seiNumber: "2026.000418/STC",
+    linkToken: "agz-ciclo-101",
     ugIds: ["sinfra"],
     metadataLabels: objectMt0018.fields.map((field) => field.label),
-    collectionIds: ["col-101-sinfra"],
     requiresFocalPointValidation: false,
     requiredAttachments: ["Edital em PDF", "Publicação do aviso"],
   },
   {
     id: "ciclo-demo-variable",
-    title: "Coleta VAR-0000 - Demonstração variável",
+    title: "Ciclo VAR-0000 - Demonstração variável",
     objectCode: "VAR-0000",
     objectName: "Demonstração variável",
     objectKind: "variavel",
     createdAt: "06 jul. 2026",
     deadline: "2026-07-20",
-    status: "ativo",
+    status: "em-andamento",
     seiNumber: "2026.000400/STC",
+    linkToken: "agz-ciclo-demo-variable",
     ugIds: ["seduc"],
     metadataLabels: [canonicalFields[0].label],
-    collectionIds: ["col-demo-variable-seduc"],
     requiresFocalPointValidation: false,
     requiredAttachments: [],
   },
   {
     id: "ciclo-102",
-    title: `Coleta ${objectMt0030.code} - ${titleCase(objectMt0030.name)}`,
+    title: `Ciclo ${objectMt0030.code} - ${titleCase(objectMt0030.name)}`,
     objectCode: objectMt0030.code,
     objectName: titleCase(objectMt0030.name),
     objectKind: "fixo",
     createdAt: "28 jun. 2026",
     deadline: "2026-07-04",
-    status: "correcao",
+    status: "em-andamento",
     seiNumber: "2026.000355/STC",
+    linkToken: "agz-ciclo-102",
     ugIds: ["sefaz"],
     metadataLabels: objectMt0030.fields.map((field) => field.label),
-    collectionIds: ["col-102-sefaz"],
     requiresFocalPointValidation: false,
     requiredAttachments: ["Relatório consolidado em PDF"],
   },
   {
     id: "ciclo-103",
-    title: `Coleta ${objectMt0012.code} - ${titleCase(objectMt0012.name)}`,
+    title: `Ciclo ${objectMt0012.code} - ${titleCase(objectMt0012.name)}`,
     objectCode: objectMt0012.code,
     objectName: titleCase(objectMt0012.name),
     objectKind: "fixo",
@@ -459,41 +456,41 @@ const seedCycles: CycleItem[] = ([
     deadline: "2026-06-28",
     status: "finalizado",
     seiNumber: "2026.000271/STC",
+    linkToken: "agz-ciclo-103",
     ugIds: ["sinfra"],
     metadataLabels: objectMt0012.fields.map((field) => field.label),
-    collectionIds: ["col-103-sinfra"],
     requiresFocalPointValidation: true,
     requiredAttachments: ["Relatório fotográfico"],
   },
   {
     id: "ciclo-104",
-    title: `Coleta ${objectMt0040.code} - ${titleCase(objectMt0040.name)}`,
+    title: `Ciclo ${objectMt0040.code} - ${titleCase(objectMt0040.name)}`,
     objectCode: objectMt0040.code,
     objectName: titleCase(objectMt0040.name),
     objectKind: "fixo",
     createdAt: "26 jun. 2026",
     deadline: "2026-07-08",
-    status: "aguardando-analise-stc",
+    status: "em-andamento",
     seiNumber: "2026.000322/STC",
+    linkToken: "agz-ciclo-104",
     ugIds: ["sefaz"],
     metadataLabels: objectMt0040.fields.map((field) => field.label),
-    collectionIds: ["col-104-sefaz"],
     requiresFocalPointValidation: false,
     requiredAttachments: [],
   },
   {
     id: "ciclo-105",
-    title: `Coleta ${objectMt0015.code} - ${titleCase(objectMt0015.name)}`,
+    title: `Ciclo ${objectMt0015.code} - ${titleCase(objectMt0015.name)}`,
     objectCode: objectMt0015.code,
     objectName: titleCase(objectMt0015.name),
     objectKind: "fixo",
     createdAt: "16 jun. 2026",
     deadline: "2026-06-30",
-    status: "nao-enviado-no-prazo",
+    status: "sem-envio-no-prazo",
     seiNumber: "2026.000301/STC",
+    linkToken: "agz-ciclo-105",
     ugIds: ["saf", "seduc"],
     metadataLabels: objectMt0015.fields.map((field) => field.label),
-    collectionIds: ["col-105-saf", "col-105-seduc"],
     requiresFocalPointValidation: false,
     requiredAttachments: [],
   },
@@ -533,321 +530,276 @@ const seedCycles: CycleItem[] = ([
   spreadsheetStatus: cycle.objectKind === "variavel" ? "generated" : "fixed-template-pending",
 }));
 
-const seedCollections: Collection[] = [
-  {
-    id: "col-100-seduc",
-    cycleId: "ciclo-100",
-    objectCode: defaultObject.code,
-    objectName: titleCase(defaultObject.name),
-    kind: "fixo",
-    ugId: "seduc",
-    linkToken: "agz-100-seduc",
-    requiredAttachments: [],
-    attachmentJustifications: [],
-    submissions: [],
-  },
-  {
-    id: "col-100-saf",
-    cycleId: "ciclo-100",
-    objectCode: defaultObject.code,
-    objectName: titleCase(defaultObject.name),
-    kind: "fixo",
-    ugId: "saf",
-    linkToken: "agz-100-saf",
-    requiredAttachments: [],
-    attachmentJustifications: [],
-    submissions: [],
-  },
-  {
-    id: "col-demo-variable-seduc",
-    cycleId: "ciclo-demo-variable",
-    objectCode: "VAR-0000",
-    objectName: "Demonstração variável",
-    kind: "variavel",
-    ugId: "seduc",
-    linkToken: "agz-demo-variable-seduc",
-    requiredAttachments: [],
-    attachmentJustifications: [],
-    submissions: [],
-  },
-  {
-    id: "col-101-sinfra",
-    cycleId: "ciclo-101",
-    objectCode: objectMt0018.code,
-    objectName: titleCase(objectMt0018.name),
-    kind: "fixo",
-    ugId: "sinfra",
-    linkToken: "agz-101-sinfra",
-    requiredAttachments: ["Edital em PDF", "Publicação do aviso"],
-    attachmentJustifications: [],
-    submissions: [
-      {
-        id: "sub-col-101-sinfra-resp-clara",
-        collectionId: "col-101-sinfra",
-        respondentId: "resp-clara",
-        respondentName: "Clara Nunes",
-        status: "enviado",
-        protocol: "AG-2026-00032",
-        fileName: "mt-0018_sinfra_obras.xlsx",
-        attachments: ["edital_042_2026.pdf", "publicacao_aviso_042.pdf"],
-        rejectionReason: "",
-        submittedAt: "08 jul. 2026",
-        isNegative: false,
-        observations: [
-          {
-            author: "Clara Nunes",
-            date: "08 jul. 2026",
-            text: "Envio do setor de obras (processos 042 e 051).",
-          },
-        ],
-        receipts: [
-          createReceipt(
-            "envio",
-            "AG-2026-00032",
-            "Clara Nunes",
-            "08 jul. 2026",
-            0,
-            "Planilha e anexos enviados pela plataforma.",
-          ),
-        ],
-      },
-      {
-        id: "sub-col-101-sinfra-resp-otavio",
-        collectionId: "col-101-sinfra",
-        respondentId: "resp-otavio",
-        respondentName: "Otávio Ramos",
-        status: "enviado",
-        protocol: "AG-2026-00033",
-        fileName: "mt-0018_sinfra_compras.xlsx",
-        attachments: ["edital_037_2026.pdf", "publicacao_aviso_037.pdf"],
-        rejectionReason: "",
-        submittedAt: "09 jul. 2026",
-        isNegative: false,
-        observations: [
-          {
-            author: "Otávio Ramos",
-            date: "09 jul. 2026",
-            text: "Envio da comissão de licitação (pregões do semestre).",
-          },
-        ],
-        receipts: [
-          createReceipt(
-            "envio",
-            "AG-2026-00033",
-            "Otávio Ramos",
-            "09 jul. 2026",
-            0,
-            "Planilha e anexos enviados pela plataforma.",
-          ),
-        ],
-      },
-    ],
-  },
-  {
-    id: "col-102-sefaz",
-    cycleId: "ciclo-102",
-    objectCode: objectMt0030.code,
-    objectName: titleCase(objectMt0030.name),
-    kind: "fixo",
-    ugId: "sefaz",
-    linkToken: "agz-102-sefaz",
-    requiredAttachments: ["Relatório consolidado em PDF"],
-    attachmentJustifications: [],
-    submissions: [
-      {
-        id: "sub-col-102-sefaz-resp-paulo",
-        collectionId: "col-102-sefaz",
-        respondentId: "resp-paulo",
-        respondentName: "Paulo Sena",
-        status: "reaberto",
-        protocol: "AG-2026-00019",
-        fileName: "mt-0030_sefaz_jun.xlsx",
-        attachments: ["relatorio_ouvidoria_jun.pdf"],
-        rejectionReason: "Período de referência divergente do solicitado pela STC.",
-        submittedAt: "02 jul. 2026",
-        isNegative: false,
-        observations: [
-          {
-            author: "Paulo Sena",
-            date: "02 jul. 2026",
-            text: "Planilha e anexos enviados pela plataforma.",
-          },
-          {
-            author: "Equipe STC",
-            date: "03 jul. 2026",
-            text: "Período de referência divergente do solicitado pela STC. Reenviar com junho completo.",
-          },
-        ],
-        receipts: [
-          createReceipt(
-            "envio",
-            "AG-2026-00019",
-            "Paulo Sena",
-            "02 jul. 2026",
-            0,
-            "Planilha e anexos enviados pela plataforma.",
-          ),
-          createReceipt(
-            "rejeicao",
-            "AG-2026-00019",
-            "Equipe STC",
-            "03 jul. 2026",
-            1,
-            "Período de referência divergente; correção solicitada.",
-          ),
-        ],
-      },
-    ],
-  },
-  {
-    id: "col-103-sinfra",
-    cycleId: "ciclo-103",
-    objectCode: objectMt0012.code,
-    objectName: titleCase(objectMt0012.name),
-    kind: "fixo",
-    ugId: "sinfra",
-    linkToken: "agz-103-sinfra",
-    requiredAttachments: ["Relatório fotográfico"],
-    attachmentJustifications: [],
-    submissions: [
-      {
-        id: "sub-col-103-sinfra-resp-clara",
-        collectionId: "col-103-sinfra",
-        respondentId: "resp-clara",
-        respondentName: "Clara Nunes",
-        status: "aprovado",
-        protocol: "AG-2026-00011",
-        fileName: "mt-0012_sinfra_jun.xlsx",
-        attachments: ["relatorio_fotografico_jun.pdf"],
-        rejectionReason: "",
-        submittedAt: "22 jun. 2026",
-        isNegative: false,
-        observations: [
-          {
-            author: "Clara Nunes",
-            date: "22 jun. 2026",
-            text: "Planilha e anexos enviados pela plataforma.",
-          },
-          {
-            author: "Ponto focal SINFRA",
-            date: "23 jun. 2026",
-            text: "Validado como resposta do órgão e encaminhado à STC.",
-          },
-          {
-            author: "Equipe STC",
-            date: "24 jun. 2026",
-            text: "Resposta aprovada. Comprovante disponível.",
-          },
-        ],
-        receipts: [
-          createReceipt(
-            "envio",
-            "AG-2026-00011",
-            "Clara Nunes",
-            "22 jun. 2026",
-            0,
-            "Planilha e anexos enviados pela plataforma.",
-          ),
-          createReceipt(
-            "fechamento",
-            "AG-2026-00011",
-            "Equipe STC",
-            "24 jun. 2026",
-            1,
-            "Resposta aprovada. Coleta fechada.",
-          ),
-        ],
-      },
-    ],
-  },
-  {
-    id: "col-104-sefaz",
-    cycleId: "ciclo-104",
-    objectCode: objectMt0040.code,
-    objectName: titleCase(objectMt0040.name),
-    kind: "fixo",
-    ugId: "sefaz",
-    linkToken: "agz-104-sefaz",
-    requiredAttachments: [],
-    attachmentJustifications: [],
-    submissions: [
-      {
-        id: "sub-col-104-sefaz-resp-paulo",
-        collectionId: "col-104-sefaz",
-        respondentId: "resp-paulo",
-        respondentName: "Paulo Sena",
-        status: "resposta-negativa",
-        protocol: "AG-2026-00027",
-        fileName: "",
-        attachments: [],
-        rejectionReason: "",
-        submittedAt: "05 jul. 2026",
-        isNegative: true,
-        observations: [
-          {
-            author: "Paulo Sena",
-            date: "05 jul. 2026",
-            text: "Não temos tabela própria: os cargos da pasta seguem a tabela unificada da SEGEP.",
-          },
-        ],
-        receipts: [
-          createReceipt(
-            "envio",
-            "AG-2026-00027",
-            "Paulo Sena",
-            "05 jul. 2026",
-            0,
-            "Resposta negativa registrada na plataforma.",
-          ),
-        ],
-      },
-    ],
-  },
-  {
-    id: "col-105-saf",
-    cycleId: "ciclo-105",
-    objectCode: objectMt0015.code,
-    objectName: titleCase(objectMt0015.name),
-    kind: "fixo",
-    ugId: "saf",
-    linkToken: "agz-105-saf",
-    requiredAttachments: [],
-    attachmentJustifications: [],
-    submissions: [],
-  },
-  {
-    id: "col-105-seduc",
-    cycleId: "ciclo-105",
-    objectCode: objectMt0015.code,
-    objectName: titleCase(objectMt0015.name),
-    kind: "fixo",
-    ugId: "seduc",
-    linkToken: "agz-105-seduc",
-    requiredAttachments: [],
-    attachmentJustifications: [],
-    submissions: [],
-  },
-];
+function createSeedCollection(
+  input: Partial<Collection> &
+    Pick<Collection, "cycleId" | "ugId" | "ownerId" | "ownerName" | "status">,
+): Collection {
+  const {
+    id,
+    cycleId,
+    ugId,
+    ownerType = "respondente",
+    ownerId,
+    ownerName,
+    status,
+    responseKind = "dados",
+    protocol = "",
+    fileName = "",
+    attachments = [],
+    rejectionReason = "",
+    submittedAt = "",
+    observations = [],
+    receipts = [],
+    attachmentJustifications = [],
+  } = input;
+  return {
+    id: id ?? `collection-${cycleId}-${ownerType}-${ownerId}`,
+    cycleId,
+    ugId,
+    ownerType,
+    ownerId,
+    ownerName,
+    status,
+    responseKind,
+    protocol,
+    fileName,
+    attachments,
+    rejectionReason,
+    submittedAt,
+    observations,
+    receipts,
+    attachmentJustifications,
+  };
+}
 
-const todayIso = new Date().toISOString().slice(0, 10);
-const today = new Intl.DateTimeFormat("pt-BR", {
+const seedCollections: Collection[] = [
+  createSeedCollection({
+    cycleId: "ciclo-101",
+    ugId: "sinfra",
+    ownerId: "resp-clara",
+    ownerName: "Clara Nunes",
+    status: "aguardando-stc",
+    protocol: "AG-2026-00032",
+    fileName: "mt-0018_sinfra_obras.xlsx",
+    attachments: ["edital_042_2026.pdf", "publicacao_aviso_042.pdf"],
+    submittedAt: "08 jul. 2026",
+    observations: [
+      {
+        author: "Clara Nunes",
+        date: "08 jul. 2026",
+        text: "Envio do setor de obras (processos 042 e 051).",
+      },
+    ],
+    receipts: [
+      createReceipt(
+        "envio",
+        "AG-2026-00032",
+        "Clara Nunes",
+        "08 jul. 2026",
+        0,
+        "Planilha e anexos enviados pela plataforma.",
+      ),
+    ],
+  }),
+  createSeedCollection({
+    cycleId: "ciclo-101",
+    ugId: "sinfra",
+    ownerId: "resp-otavio",
+    ownerName: "Otávio Ramos",
+    status: "aguardando-stc",
+    protocol: "AG-2026-00033",
+    fileName: "mt-0018_sinfra_compras.xlsx",
+    attachments: ["edital_037_2026.pdf", "publicacao_aviso_037.pdf"],
+    submittedAt: "09 jul. 2026",
+    observations: [
+      {
+        author: "Otávio Ramos",
+        date: "09 jul. 2026",
+        text: "Envio da comissão de licitação (pregões do semestre).",
+      },
+    ],
+    receipts: [
+      createReceipt(
+        "envio",
+        "AG-2026-00033",
+        "Otávio Ramos",
+        "09 jul. 2026",
+        0,
+        "Planilha e anexos enviados pela plataforma.",
+      ),
+    ],
+  }),
+  createSeedCollection({
+    cycleId: "ciclo-102",
+    ugId: "sefaz",
+    ownerId: "resp-paulo",
+    ownerName: "Paulo Sena",
+    status: "em-correcao",
+    protocol: "AG-2026-00019",
+    fileName: "mt-0030_sefaz_jun.xlsx",
+    attachments: ["relatorio_ouvidoria_jun.pdf"],
+    rejectionReason: "Período de referência divergente do solicitado pela STC.",
+    submittedAt: "02 jul. 2026",
+    observations: [
+      {
+        author: "Paulo Sena",
+        date: "02 jul. 2026",
+        text: "Planilha e anexos enviados pela plataforma.",
+      },
+      {
+        author: "Equipe STC",
+        date: "03 jul. 2026",
+        text: "Período de referência divergente do solicitado pela STC. Reenviar com junho completo.",
+      },
+    ],
+    receipts: [
+      createReceipt(
+        "envio",
+        "AG-2026-00019",
+        "Paulo Sena",
+        "02 jul. 2026",
+        0,
+        "Planilha e anexos enviados pela plataforma.",
+      ),
+      createReceipt(
+        "rejeicao",
+        "AG-2026-00019",
+        "Equipe STC",
+        "03 jul. 2026",
+        1,
+        "Período de referência divergente; correção solicitada.",
+      ),
+    ],
+  }),
+  createSeedCollection({
+    cycleId: "ciclo-103",
+    ugId: "sinfra",
+    ownerId: "resp-clara",
+    ownerName: "Clara Nunes",
+    status: "aprovada",
+    protocol: "AG-2026-00011",
+    fileName: "mt-0012_sinfra_jun.xlsx",
+    attachments: ["relatorio_fotografico_jun.pdf"],
+    submittedAt: "22 jun. 2026",
+    observations: [
+      {
+        author: "Clara Nunes",
+        date: "22 jun. 2026",
+        text: "Planilha e anexos enviados pela plataforma.",
+      },
+      {
+        author: "Ponto focal SINFRA",
+        date: "23 jun. 2026",
+        text: "Validado como resposta do órgão e encaminhado à STC.",
+      },
+      {
+        author: "Equipe STC",
+        date: "24 jun. 2026",
+        text: "Resposta aprovada. Comprovante disponível.",
+      },
+    ],
+    receipts: [
+      createReceipt(
+        "envio",
+        "AG-2026-00011",
+        "Clara Nunes",
+        "22 jun. 2026",
+        0,
+        "Planilha e anexos enviados pela plataforma.",
+      ),
+      createReceipt(
+        "fechamento",
+        "AG-2026-00011",
+        "Equipe STC",
+        "24 jun. 2026",
+        1,
+        "Resposta aprovada. Coleta fechada.",
+      ),
+    ],
+  }),
+  createSeedCollection({
+    cycleId: "ciclo-104",
+    ugId: "sefaz",
+    ownerId: "resp-paulo",
+    ownerName: "Paulo Sena",
+    status: "aguardando-stc",
+    responseKind: "indisponibilidade",
+    protocol: "AG-2026-00027",
+    submittedAt: "05 jul. 2026",
+    observations: [
+      {
+        author: "Paulo Sena",
+        date: "05 jul. 2026",
+        text: "Não temos tabela própria: os cargos da pasta seguem a tabela unificada da SEGEP.",
+      },
+    ],
+    receipts: [
+      createReceipt(
+        "envio",
+        "AG-2026-00027",
+        "Paulo Sena",
+        "05 jul. 2026",
+        0,
+        "Indisponibilidade da informação registrada na plataforma.",
+      ),
+    ],
+  }),
+  createSeedCollection({
+    cycleId: "ciclo-100",
+    ugId: "seduc",
+    ownerId: "resp-joao",
+    ownerName: "João Lima",
+    status: "pendente",
+  }),
+  createSeedCollection({
+    cycleId: "ciclo-demo-variable",
+    ugId: "seduc",
+    ownerId: "resp-joao",
+    ownerName: "João Lima",
+    status: "pendente",
+  }),
+];
+const ptBrDateFormatter = new Intl.DateTimeFormat("pt-BR", {
   day: "2-digit",
   month: "short",
   year: "numeric",
-}).format(new Date());
+});
 
 function titleCase(value: string) {
   return value.toLowerCase().replace(/(^|\s)\S/g, (letter) => letter.toUpperCase());
 }
 
+export function isValidIsoDate(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const parsed = new Date(`${value}T00:00:00.000Z`);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+}
+
+export function dateIsoAtTimezoneOffset(
+  date: Date,
+  timezoneOffsetMinutes = date.getTimezoneOffset(),
+): string {
+  return new Date(date.getTime() - timezoneOffsetMinutes * 60_000).toISOString().slice(0, 10);
+}
+
+function currentDateIso(): string {
+  const now = new Date();
+  return dateIsoAtTimezoneOffset(now);
+}
+
+function currentDateLabel(): string {
+  return ptBrDateFormatter.format(new Date());
+}
+
 function isPastDeadline(deadline: string) {
-  return deadline < todayIso;
+  return isValidIsoDate(deadline) && deadline < currentDateIso();
 }
 
 // §1.3: o prazo aparece com contexto ("vence em 3 dias"), não só a data seca.
 function deadlineContext(deadline: string): string {
+  if (!isValidIsoDate(deadline)) return "prazo não informado";
   const diff = Math.round(
-    (new Date(`${deadline}T12:00:00`).getTime() - new Date(`${todayIso}T12:00:00`).getTime()) / 86400000,
+    (new Date(`${deadline}T12:00:00`).getTime() - new Date(`${currentDateIso()}T12:00:00`).getTime()) / 86400000,
   );
   if (diff > 1) return `vence em ${diff} dias`;
   if (diff === 1) return "vence amanhã";
@@ -856,7 +808,10 @@ function deadlineContext(deadline: string): string {
   return `venceu há ${Math.abs(diff)} dias`;
 }
 
-function draftForObject(object: TransparencyObject): CycleDraft {
+function draftForObject(
+  object: TransparencyObject,
+  registeredAttachments: readonly string[] = [],
+): CycleDraft {
   return {
     title: `Ciclo ${object.code} - ${titleCase(object.name)}`,
     // TODO(P-009): prazos-padrão e datas fixas por objeto ainda em aberto; campo livre.
@@ -868,7 +823,7 @@ function draftForObject(object: TransparencyObject): CycleDraft {
     kind: "fixo",
     variableObjectCode: "",
     variableObjectName: "",
-    requiredAttachments: requiredAttachmentsForObject(object),
+    requiredAttachments: requiredAttachmentsForObject(object, registeredAttachments),
     requiresFocalPointValidation: false,
   };
 }
@@ -893,50 +848,139 @@ function nextVariableCode(cycles: CycleItem[]): string {
   return `VAR-${String(nextNumber).padStart(4, "0")}`;
 }
 
-export function statusAfterRespondentSend(requiresFocal: boolean, isNegative: boolean): SubmissionStatus {
-  if (requiresFocal) return "aguardando-ponto-focal";
-  return isNegative ? "resposta-negativa" : "enviado";
+export interface IndividualCollectionOwner {
+  id: string;
+  type: CollectionOwnerType;
+  name: string;
+  ugId: string;
 }
 
-export function statusAfterFocal(isNegative: boolean): SubmissionStatus {
-  return isNegative ? "resposta-negativa" : "enviado";
+export function collectionIdentity(cycleId: string, owner: IndividualCollectionOwner): string {
+  return `collection-${cycleId}-${owner.type}-${owner.id}`;
 }
 
-export function deriveCycleStatus(cycle: CycleItem, collections: Collection[]): CycleStatus {
-  const expectedCollectionIds = new Set(cycle.collectionIds);
+export function ensureIndividualCollection(
+  collections: Collection[],
+  cycle: Pick<CycleItem, "id">,
+  owner: IndividualCollectionOwner,
+): { collections: Collection[]; collection: Collection; created: boolean } {
+  const existing = collections.find(
+    (item) =>
+      item.cycleId === cycle.id && item.ownerType === owner.type && item.ownerId === owner.id,
+  );
+  if (existing) {
+    const collection =
+      existing.ownerName === owner.name && existing.ugId === owner.ugId
+        ? existing
+        : { ...existing, ownerName: owner.name, ugId: owner.ugId };
+    return {
+      collections:
+        collection === existing
+          ? collections
+          : collections.map((item) => (item.id === existing.id ? collection : item)),
+      collection,
+      created: false,
+    };
+  }
+
+  const collection: Collection = {
+    id: collectionIdentity(cycle.id, owner),
+    cycleId: cycle.id,
+    ugId: owner.ugId,
+    ownerType: owner.type,
+    ownerId: owner.id,
+    ownerName: owner.name,
+    status: "pendente",
+    responseKind: "dados",
+    protocol: "",
+    fileName: "",
+    attachments: [],
+    rejectionReason: "",
+    submittedAt: "",
+    observations: [],
+    receipts: [],
+    attachmentJustifications: [],
+  };
+  return { collections: [...collections, collection], collection, created: true };
+}
+
+export function statusAfterRespondentSend(
+  requiresFocal: boolean,
+  _informationUnavailable = false,
+): CollectionStatus {
+  return requiresFocal ? "aguardando-ponto-focal" : "aguardando-stc";
+}
+
+export function statusAfterFocal(_informationUnavailable = false): CollectionStatus {
+  return "aguardando-stc";
+}
+
+export function statusAfterCollectionSend(
+  ownerType: CollectionOwnerType,
+  requiresFocal: boolean,
+  informationUnavailable = false,
+): CollectionStatus {
+  return ownerType === "ponto-focal"
+    ? statusAfterFocal(informationUnavailable)
+    : statusAfterRespondentSend(requiresFocal, informationUnavailable);
+}
+
+function collectionWasSubmitted(collection: Collection): boolean {
+  return Boolean(collection.submittedAt) || collection.receipts.some((receipt) => receipt.kind === "envio");
+}
+
+export function deriveCycleStatus(
+  cycle: Pick<CycleItem, "id" | "deadline" | "ugIds">,
+  collections: Collection[],
+  ugId?: string,
+): CycleStatus {
   const cycleCollections = collections.filter(
-    (item) => item.cycleId === cycle.id && expectedCollectionIds.has(item.id),
+    (item) => item.cycleId === cycle.id && (!ugId || item.ugId === ugId),
   );
-  const sentByCollection = cycleCollections.map((item) =>
-    item.submissions.filter((submission) => submission.status !== "rascunho"),
-  );
-  const sent = sentByCollection.flat();
-  if (sent.some((item) => item.status === "reaberto")) return "correcao";
-  if (sent.some((item) => item.status === "aguardando-ponto-focal")) return "aguardando-ponto-focal";
-  const everyCollectionFinished =
-    expectedCollectionIds.size > 0 &&
-    cycleCollections.length === expectedCollectionIds.size &&
-    sentByCollection.every(
-      (submissions) => submissions.length > 0 && submissions.every((item) => item.status === "aprovado"),
+  const expectedUgIds = ugId ? [ugId] : cycle.ugIds;
+  const coversEveryExpectedUg =
+    expectedUgIds.length > 0 &&
+    expectedUgIds.every((expectedUgId) =>
+      cycleCollections.some((collection) => collection.ugId === expectedUgId),
     );
-  if (everyCollectionFinished) return "finalizado";
-  if (sent.length) return "aguardando-analise-stc";
-  return isPastDeadline(cycle.deadline) ? "nao-enviado-no-prazo" : "ativo";
+  if (
+    coversEveryExpectedUg &&
+    cycleCollections.length > 0 &&
+    cycleCollections.every((item) => item.status === "aprovada")
+  ) {
+    return "finalizado";
+  }
+  if (isPastDeadline(cycle.deadline) && !cycleCollections.some(collectionWasSubmitted)) {
+    return "sem-envio-no-prazo";
+  }
+  return "em-andamento";
 }
 
-function collectionLink(collection: Collection) {
-  return `agiliza.ma.gov.br/coleta/${collection.linkToken}`;
+export function cycleAcceptsNewCollections(
+  cycle: Pick<CycleItem, "id" | "deadline" | "ugIds" | "creationStatus">,
+  collections: Collection[],
+  ugId?: string,
+): boolean {
+  return (
+    cycle.creationStatus === "aprovado" &&
+    deriveCycleStatus(cycle, collections, ugId) !== "finalizado"
+  );
 }
 
-// §1.3: situação derivada POR COLETA, para o cartão do painel mostrar o andamento sem clique.
+export function cycleLink(
+  cycle: Pick<CycleItem, "creationStatus" | "linkToken">,
+): string | null {
+  if (cycle.creationStatus !== "aprovado" || !cycle.linkToken) return null;
+  return `agiliza.ma.gov.br/ciclo/${cycle.linkToken}`;
+}
+
 type CollectionSituation = "pendente" | "aguardando-focal" | "aguardando-analise" | "correcao" | "concluida";
 
 function collectionSituation(collection: Collection): CollectionSituation {
-  const sent = collection.submissions.filter((item) => item.status !== "rascunho");
-  if (!sent.length) return "pendente";
-  if (sent.some((item) => item.status === "reaberto")) return "correcao";
-  if (sent.some((item) => item.status === "aguardando-ponto-focal")) return "aguardando-focal";
-  if (sent.every((item) => item.status === "aprovado")) return "concluida";
+  if (collection.status === "pendente" || collection.status === "rascunho") return "pendente";
+  if (collection.status === "em-correcao") return "correcao";
+  if (collection.status === "aguardando-ponto-focal") return "aguardando-focal";
+  if (collection.status === "aprovada") return "concluida";
   return "aguardando-analise";
 }
 
@@ -959,11 +1003,10 @@ function cycleBreakdown(cycleCollections: Collection[]): string {
 
 // §3: data de fechamento derivada da última observação das respostas aprovadas (protótipo sem backend).
 function cycleClosedAt(cycle: CycleItem, collections: Collection[]): string {
-  if (cycle.status !== "finalizado") return "—";
+  if (deriveCycleStatus(cycle, collections) !== "finalizado") return "—";
   const dates = collections
     .filter((item) => item.cycleId === cycle.id)
-    .flatMap((item) => item.submissions)
-    .filter((item) => item.status === "aprovado")
+    .filter((item) => item.status === "aprovada")
     .map((item) => item.observations[item.observations.length - 1]?.date ?? item.submittedAt);
   return dates[dates.length - 1] ?? "—";
 }
@@ -1144,12 +1187,9 @@ function StatusFilter({
     [CycleFilters["status"], string, Tone, Parameters<typeof Icon>[0]["name"]]
   > = [
     ["todos", "Todos", "neutral", "filter"],
-    ["ativo", "Ativo", "info", "send"],
-    ["aguardando-ponto-focal", "Aguardando ponto focal", "warning", "users"],
-    ["aguardando-analise-stc", "Aguardando análise da STC", "warning", "clipboard"],
-    ["correcao", "Aguardando correção", "orange", "refresh"],
+    ["em-andamento", "Em andamento", "info", "send"],
     ["finalizado", "Finalizado", "success", "check"],
-    ["nao-enviado-no-prazo", "Não enviado no prazo", "danger", "x"],
+    ["sem-envio-no-prazo", "Sem envio no prazo", "danger", "x"],
   ];
 
   return (
@@ -1230,40 +1270,35 @@ function MetricCard({
   );
 }
 
-function submissionLabel(status: SubmissionStatus): string {
-  const labels: Record<SubmissionStatus, string> = {
+function collectionLabel(status: CollectionStatus): string {
+  const labels: Record<CollectionStatus, string> = {
     pendente: "Pendente",
     rascunho: "Rascunho salvo",
-    enviado: "Enviado à STC",
     "aguardando-ponto-focal": "Aguardando ponto focal",
-    reaberto: "Reaberto para correção",
-    aprovado: "Aprovado",
-    "resposta-negativa": "Resposta negativa",
+    "aguardando-stc": "Aguardando análise da STC",
+    "em-correcao": "Em correção",
+    aprovada: "Aprovada",
   };
   return labels[status];
 }
 
-function submissionTone(status: SubmissionStatus): Tone {
-  const tones: Record<SubmissionStatus, Tone> = {
+function collectionTone(status: CollectionStatus): Tone {
+  const tones: Record<CollectionStatus, Tone> = {
     pendente: "warning",
     rascunho: "neutral",
-    enviado: "info",
     "aguardando-ponto-focal": "warning",
-    reaberto: "danger",
-    aprovado: "success",
-    "resposta-negativa": "neutral",
+    "aguardando-stc": "warning",
+    "em-correcao": "orange",
+    aprovada: "success",
   };
   return tones[status];
 }
 
 function cycleLabel(status: CycleStatus, scope: "stc" | "orgao" = "stc"): string {
   const labels: Record<CycleStatus, string> = {
-    ativo: "Ativo",
-    "aguardando-ponto-focal": "Aguardando ponto focal",
-    "aguardando-analise-stc": "Aguardando análise da STC",
-    correcao: scope === "orgao" ? "Devolvida para correção" : "Aguardando correção",
+    "em-andamento": scope === "orgao" ? "Em andamento" : "Ciclo em andamento",
     finalizado: "Finalizado",
-    "nao-enviado-no-prazo": "Não enviado no prazo",
+    "sem-envio-no-prazo": "Sem envio no prazo",
   };
   return labels[status];
 }
@@ -1271,22 +1306,16 @@ function cycleLabel(status: CycleStatus, scope: "stc" | "orgao" = "stc"): string
 function cycleTone(status: CycleStatus): Tone {
   // §1.2: verde = terminou · amarelo = alguém precisa agir · vermelho = furou o prazo.
   const tones: Record<CycleStatus, Tone> = {
-    ativo: "info",
-    "aguardando-ponto-focal": "warning",
-    "aguardando-analise-stc": "warning",
-    correcao: "orange",
+    "em-andamento": "info",
     finalizado: "success",
-    "nao-enviado-no-prazo": "danger",
+    "sem-envio-no-prazo": "danger",
   };
   return tones[status];
 }
 
-function cycleStatusHelp(cycle: CycleItem): string {
-  if (cycle.status === "ativo") return "Coleta aberta: aguardando envios pela plataforma.";
-  if (cycle.status === "aguardando-ponto-focal") return "Há respostas aguardando validação do ponto focal.";
-  if (cycle.status === "aguardando-analise-stc") return "Há respostas novas aguardando análise da STC.";
-  if (cycle.status === "correcao") return "Envio devolvido para correção da UG.";
-  if (cycle.status === "nao-enviado-no-prazo")
+function cycleStatusHelp(status: CycleStatus): string {
+  if (status === "em-andamento") return "Ciclo aberto: as coletas individuais seguem em andamento.";
+  if (status === "sem-envio-no-prazo")
     return "Prazo encerrado sem envio — estado distinto de resposta negativa.";
   return "Respostas aprovadas e comprovantes emitidos.";
 }
@@ -1349,20 +1378,18 @@ function describeReviewChanges(cycle: CycleItem, draft: CycleReviewDraft): strin
 
 function TopBar({
   role,
-  setRole,
-  respondentInitial,
+  profileInitial,
   onProfileClick,
+  onLogout,
 }: {
   role: Role;
-  setRole: (role: Role) => void;
-  respondentInitial: string;
+  profileInitial: string;
   onProfileClick: () => void;
+  onLogout: () => void;
 }) {
   const avatar =
-    role === "ponto-focal"
-      ? "M"
-      : role === "respondente"
-        ? respondentInitial
+    role === "ponto-focal" || role === "respondente"
+      ? profileInitial
         : role === "stc-analista"
           ? "A"
           : "E";
@@ -1380,40 +1407,17 @@ function TopBar({
 
       <div className="topbar-actions">
         <span className="sei-chip">SEI formal obrigatório</span>
-        <div className="role-switch" aria-label="Visão do protótipo">
-          <button
-            type="button"
-            className={role === "ponto-focal" ? "active" : ""}
-            onClick={() => setRole("ponto-focal")}
-          >
-            Ponto focal
-          </button>
-          <button
-            type="button"
-            className={role === "respondente" ? "active" : ""}
-            onClick={() => setRole("respondente")}
-          >
-            Respondente
-          </button>
-          <button
-            type="button"
-            className={role === "stc-analista" ? "active" : ""}
-            onClick={() => setRole("stc-analista")}
-          >
-            Analista STC
-          </button>
-          <button
-            type="button"
-            className={role === "stc-especialista" ? "active" : ""}
-            onClick={() => setRole("stc-especialista")}
-          >
-            Especialista STC
-          </button>
-        </div>
         {role !== "login" ? (
-          <button type="button" className="profile-avatar" onClick={onProfileClick} aria-label="Abrir perfil">
-            {avatar}
-          </button>
+          <>
+            {isStcRole(role) ? (
+              <button type="button" className="profile-avatar" onClick={onProfileClick} aria-label="Abrir perfil">
+                {avatar}
+              </button>
+            ) : (
+              <span className="profile-avatar" aria-hidden="true">{avatar}</span>
+            )}
+            <button type="button" className="topbar-logout" onClick={onLogout}>Sair</button>
+          </>
         ) : null}
       </div>
       <span className="topbar-compact-note">SEI formal + resposta na plataforma</span>
@@ -1423,38 +1427,26 @@ function TopBar({
 
 function ProfileDrawer({
   role,
-  respondent,
-  ugList,
   open,
   onClose,
 }: {
-  role: Role;
-  respondent: Respondent | null;
-  ugList: Ug[];
+  role: StcRole;
   open: boolean;
   onClose: () => void;
 }) {
-  if (!open || role === "login") return null;
+  if (!open) return null;
 
   const heading =
-    role === "ponto-focal"
-      ? { avatar: "M", name: focalUser.name, detail: "Ponto focal · um por órgão" }
-      : role === "respondente"
-        ? {
-            avatar: respondent ? respondent.name.charAt(0) : "R",
-            name: respondent?.name ?? "Acesso pelo link",
-            detail: respondent ? respondent.role : "Cadastro ainda não concluído",
-          }
-        : role === "stc-analista"
-          ? { avatar: "A", name: "Analista STC", detail: "Criação e acompanhamento de ciclos" }
-          : { avatar: "E", name: "Especialista STC", detail: "Aprovação e acompanhamento" };
+    role === "stc-analista"
+      ? { avatar: "A", name: "Analista STC", detail: "Criação e acompanhamento de ciclos" }
+      : { avatar: "E", name: "Especialista STC", detail: "Aprovação e acompanhamento" };
 
   return (
     <div className="profile-drawer-layer" aria-live="polite">
       <button type="button" className="drawer-backdrop" onClick={onClose} aria-label="Fechar perfil" />
       <aside className="profile-drawer">
         <div className="drawer-head">
-          <div className="profile-avatar large">{heading.avatar}</div>
+          <div className="profile-avatar large" aria-hidden="true">{heading.avatar}</div>
           <div>
             <span className="eyebrow">Perfil de acesso</span>
             <h3>{heading.name}</h3>
@@ -1465,85 +1457,126 @@ function ProfileDrawer({
           </button>
         </div>
 
-        {role === "ponto-focal" ? (
-          <>
-            <div className="drawer-section">
-              <span>Unidade</span>
-              <strong>SEDUC</strong>
-              <p>Secretaria de Estado da Educação</p>
-            </div>
-            <div className="drawer-section">
-              <span>Papel</span>
-              <strong>Vê o acionamento inteiro do órgão</strong>
-              <p>Acompanha todas as coletas e submissões, pode responder ou apenas monitorar.</p>
-            </div>
-            <div className="drawer-section">
-              <span>Validação</span>
-              <strong>Dá ciência quando a coleta exige</strong>
-              <p>Com o toggle ligado, valida e encaminha a resposta do órgão à STC. Também cadastra respondentes.</p>
-            </div>
-          </>
-        ) : null}
-
-        {role === "respondente" ? (
-          <>
-            <div className="drawer-section">
-              <span>Vínculo</span>
-              <strong>
-                {respondent
-                  ? `${ugList.find((ug) => ug.id === respondent.ugId)?.acronym ?? respondent.ugId} · ${respondent.role || "Respondente técnico"}`
-                  : "Definido no cadastro pelo link"}
-              </strong>
-              <p>
-                {respondent
-                  ? respondent.createdBySelf
-                    ? "Usuário criado pelo próprio usuário (auto-cadastro pelo link)."
-                    : "Pré-cadastrado pelo ponto focal do órgão."
-                  : "Quem chega pelo link do SEI se cadastra com validação por e-mail."}
-              </p>
-            </div>
-            <div className="drawer-section">
-              <span>Visibilidade</span>
-              <strong>Apenas as coletas dele</strong>
-              <p>O respondente técnico não vê o conceito de acionamento — só as coletas em que foi adicionado.</p>
-            </div>
-            <div className="drawer-section">
-              <span>Acesso</span>
-              <strong>{respondent ? respondent.email : "E-mail + senha após o 1º acesso"}</strong>
-              <p>{respondent?.emailVerified ? "E-mail verificado." : "Validação por e-mail pendente."}</p>
-            </div>
-          </>
-        ) : null}
-
-        {isStcRole(role) ? (
-          <>
-            <div className="drawer-section">
-              <span>Unidade</span>
-              <strong>STC</strong>
-              <p>Secretaria da Transparência e Controle</p>
-            </div>
-            <div className="drawer-section">
-              <span>Função</span>
-              <strong>
-                {role === "stc-analista"
-                  ? "Cria e configura ciclos"
-                  : "Analisa e aprova a criação dos ciclos"}
-              </strong>
-              <p>
-                {role === "stc-analista"
-                  ? "Define objeto, campos, anexos obrigatórios e o toggle de validação do ponto focal."
-                  : "Confere UGs, campos, anexos e configurações antes do envio às unidades gestoras."}
-              </p>
-            </div>
-            <div className="drawer-section">
-              <span>Escopo operacional</span>
-              <strong>SEI formal + plataforma</strong>
-              <p>O SEI formaliza o pedido; a plataforma coleta, faz a checagem estrutural e registra tudo.</p>
-            </div>
-          </>
-        ) : null}
+        <div className="drawer-section">
+          <span>Unidade</span>
+          <strong>STC</strong>
+          <p>Secretaria da Transparência e Controle</p>
+        </div>
+        <div className="drawer-section">
+          <span>Função</span>
+          <strong>
+            {role === "stc-analista"
+              ? "Cria e configura ciclos"
+              : "Analisa e aprova a criação dos ciclos"}
+          </strong>
+          <p>
+            {role === "stc-analista"
+              ? "Define objeto, campos, anexos obrigatórios e o toggle de validação do ponto focal."
+              : "Confere UGs, campos, anexos e configurações antes do envio às unidades gestoras."}
+          </p>
+        </div>
+        <div className="drawer-section">
+          <span>Escopo operacional</span>
+          <strong>SEI formal + plataforma</strong>
+          <p>O SEI formaliza o pedido; a plataforma coleta, faz a checagem estrutural e registra tudo.</p>
+        </div>
       </aside>
     </div>
+  );
+}
+function RoleGuidancePanel({
+  role,
+  respondent,
+  focalUg,
+  cycle,
+  collection,
+}: {
+  role: Role;
+  respondent: Respondent | null;
+  focalUg: Ug | null;
+  cycle: CycleItem | null;
+  collection: Collection | null;
+}) {
+  if (role !== "ponto-focal" && role !== "respondente") return null;
+
+  if (role === "respondente") {
+    return (
+      <aside className="role-guidance-panel" aria-label="Orientações do respondente">
+        <div className="guidance-profile">
+          <span className="profile-avatar large" aria-hidden="true">{respondent?.name.charAt(0) ?? "R"}</span>
+          <div><span className="eyebrow">Seu perfil</span><strong>{respondent?.name ?? "Respondente"}</strong></div>
+        </div>
+        <section>
+          <span className="eyebrow">Sua visão</span>
+          <h3>Somente suas coletas</h3>
+          <p>Você não acessa ciclos nem respostas de outras pessoas do mesmo órgão.</p>
+        </section>
+        <section>
+          <span className="eyebrow">O que você pode fazer</span>
+          <ul>
+            <li>Preencher e enviar sua planilha e seus anexos.</li>
+            <li>Corrigir uma coleta devolvida.</li>
+            <li>Consultar protocolos e comprovantes.</li>
+          </ul>
+        </section>
+        {cycle && collection ? (
+          <section className="guidance-context">
+            <span className="eyebrow">Nesta coleta</span>
+            <h3>Prazo: {cycle.deadline}</h3>
+            <p>
+              {cycle.requiresFocalPointValidation
+                ? "Depois do envio, o ponto focal confere e encaminha sua resposta à STC."
+                : "Depois do envio, sua resposta segue diretamente para análise da STC."}
+            </p>
+            <StatusPill tone={collectionTone(collection.status)}>{collectionLabel(collection.status)}</StatusPill>
+          </section>
+        ) : null}
+      </aside>
+    );
+  }
+
+  if (!focalUg) return null;
+
+  return (
+    <aside className="role-guidance-panel focal-guidance" aria-label="Orientações do ponto focal">
+      <div className="guidance-profile">
+        <span className="profile-avatar large" aria-hidden="true">{focalUg.focalName.charAt(0)}</span>
+        <div><span className="eyebrow">Ponto focal · {focalUg.acronym}</span><strong>{focalUg.focalName}</strong></div>
+      </div>
+      <section>
+        <span className="eyebrow">Seu papel</span>
+        <h3>Coordenar a resposta do órgão</h3>
+        <p>Você acompanha os ciclos da {focalUg.acronym} e todas as coletas individuais vinculadas a eles.</p>
+      </section>
+      {cycle ? (
+        <section className="guidance-context">
+          <span className="eyebrow">Neste ciclo</span>
+          <h3>{cycle.objectCode} · prazo {cycle.deadline}</h3>
+          <p>
+            {cycle.requiresFocalPointValidation
+              ? "Sua conferência está ligada: os envios dos respondentes aguardam sua ciência; se você responder diretamente, a coleta segue à STC."
+              : "Sua conferência está desligada: as respostas seguem direto à STC e você acompanha as pendências."}
+          </p>
+        </section>
+      ) : null}
+      <section>
+        <span className="eyebrow">O que você pode fazer</span>
+        <ul>
+          <li>Cadastrar respondentes ou responder diretamente.</li>
+          <li>Intermediar dúvidas e sinalizar informações indisponíveis à STC.</li>
+          <li>Quando o ciclo exigir, conferir cada envio e encaminhá-lo à STC.</li>
+        </ul>
+      </section>
+      <section>
+        <span className="eyebrow">O que você não pode fazer</span>
+        <ul>
+          <li>Alterar a resposta ou os arquivos enviados por outra pessoa.</li>
+          <li>Aprovar em nome da STC ou mudar as regras do ciclo.</li>
+          <li>Acessar dados de outros órgãos participantes.</li>
+        </ul>
+      </section>
+      <div className="guidance-note"><Icon name="shield" size={16} /><span>O toggle definido pela STC determina se sua validação é obrigatória.</span></div>
+    </aside>
   );
 }
 
@@ -1604,15 +1637,23 @@ function Sidebar({
 }
 
 function LoginScreen({
-  enter,
-  openPilotLink,
+  onLogin,
 }: {
-  enter: (role: Role) => void;
-  openPilotLink: () => void;
+  onLogin: (email: string, password: string) => boolean;
 }) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+
+  const submit = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (onLogin(email, password)) return;
+    setError("E-mail não reconhecido. Confira o acesso informado ou use o link do ciclo para o primeiro cadastro.");
+  };
+
   return (
-    <div className="login-screen login-aurora">
-      <section className="login-copy">
+    <div className="login-screen unified-login-screen">
+      <section className="unified-login-card" aria-labelledby="login-title">
         <div className="brand-lockup large">
           <span className="brand-mark">
             <Icon name="shield" />
@@ -1622,83 +1663,79 @@ function LoginScreen({
             <span>Protótipo visual do MVP</span>
           </div>
         </div>
-        <span className="login-kicker">SEI formal preservado</span>
-        <h1>Planilha-padrão, anexos com checklist e validação em um só fluxo.</h1>
-        <p>
-          A STC cria o acionamento e gera o link de cada coleta anexado ao SEI. O respondente técnico envia a
-          planilha preenchida e os anexos; o ponto focal valida quando exigido; a STC verifica e
-          emite o comprovante.
-        </p>
-        <div className="login-actions">
-          <button type="button" className="primary-button ripple-button" onClick={() => enter("ponto-focal")}>
-            <Icon name="users" />
-            Entrar como ponto focal
-          </button>
-          <button type="button" className="secondary-button" onClick={() => enter("respondente")}>
-            <Icon name="lock" />
-            Entrar como respondente
-          </button>
-          <button type="button" className="secondary-button" onClick={() => enter("stc-analista")}>
-            <Icon name="edit" />
-            Entrar como Analista STC
-          </button>
-          <button type="button" className="secondary-button" onClick={() => enter("stc-especialista")}>
-            <Icon name="clipboard" />
-            Entrar como Especialista STC
-          </button>
-          <button type="button" className="secondary-button" onClick={openPilotLink}>
-            <Icon name="link" />
-            Abrir link da coleta (SEI)
-          </button>
+        <div className="unified-login-heading">
+          <span className="login-kicker">SEI formal preservado</span>
+          <h1 id="login-title">Acesse o Agiliza Transparência</h1>
+          <p>Entre com seu e-mail institucional. O sistema identifica automaticamente o seu perfil de acesso.</p>
         </div>
-      </section>
 
-      <section className="login-preview" aria-label="Prévia do fluxo">
-        <div className="preview-card main">
-          <span className="eyebrow">Fluxo MVP</span>
-          <h3>Pedido no SEI, resposta na plataforma</h3>
-          <div className="preview-flow">
-            <div>
-              <Icon name="file" />
-              <strong>SEI</strong>
-              <span>link da coleta</span>
-            </div>
-            <div>
-              <Icon name="upload" />
-              <strong>Respondente</strong>
-              <span>planilha + anexos</span>
-            </div>
-            <div>
-              <Icon name="users" />
-              <strong>Ponto focal</strong>
-              <span>valida se exigido</span>
-            </div>
-            <div>
-              <Icon name="clipboard" />
-              <strong>STC</strong>
-              <span>verifica e comprova</span>
-            </div>
-          </div>
-        </div>
-        <div className="preview-card compact">
-          <strong>Fixo × variável</strong>
-          <span>modelo fixo vinculado por código ou planilha variável gerada dos campos escolhidos</span>
-        </div>
-        <div className="preview-card compact dark">
-          <strong>Estados próprios</strong>
-          <span>resposta negativa ≠ não enviado no prazo</span>
-        </div>
+        <form className="unified-login-form" onSubmit={submit}>
+          <label htmlFor="login-email">
+            E-mail
+            <input
+              id="login-email"
+              type="email"
+              autoComplete="username"
+              value={email}
+              aria-invalid={Boolean(error)}
+              aria-describedby={error ? "login-error" : undefined}
+              onChange={(event) => {
+                setEmail(event.target.value);
+                setError("");
+              }}
+            />
+          </label>
+          <label htmlFor="login-password">
+            Senha
+            <input
+              id="login-password"
+              type="password"
+              autoComplete="current-password"
+              value={password}
+              aria-invalid={Boolean(error)}
+              aria-describedby={error ? "login-error" : undefined}
+              onChange={(event) => {
+                setPassword(event.target.value);
+                setError("");
+              }}
+            />
+          </label>
+          {error ? <p id="login-error" className="form-error" role="alert">{error}</p> : null}
+          <button type="submit" className="primary-button ripple-button" disabled={!email.trim() || !password.trim()}>
+            <Icon name="lock" />Entrar
+          </button>
+        </form>
+
+        <details className="unified-login-registration">
+          <summary>
+            <Icon name="link" size={18} />
+            <span>
+              <strong>Primeiro acesso? Veja como criar seu cadastro</strong>
+              <span>Primeiro acesso como respondente? Use o link do ciclo recebido no SEI.</span>
+            </span>
+          </summary>
+          <p>
+            O cadastro é iniciado pelo link formal enviado no processo SEI. Assim, a plataforma identifica
+            seu órgão e cria somente a sua coleta individual.
+          </p>
+        </details>
+
+        <details className="demo-access-list">
+          <summary>Ver acessos de demonstração</summary>
+          <small>maria.costa@seduc.ma.gov.br · joao.lima@seduc.ma.gov.br</small>
+          <small>analista@stc.ma.gov.br · especialista@stc.ma.gov.br</small>
+        </details>
       </section>
     </div>
   );
 }
 
 function ReceiptTimeline({
-  submission,
+  collection,
   seiNumber,
   compact = false,
 }: {
-  submission: Submission;
+  collection: Collection;
   seiNumber: string;
   compact?: boolean;
 }) {
@@ -1712,10 +1749,10 @@ function ReceiptTimeline({
     rejeicao: "x",
     fechamento: "check",
   };
-  const sendReceipts = submission.receipts.filter((receipt) => receipt.kind === "envio");
+  const sendReceipts = collection.receipts.filter((receipt) => receipt.kind === "envio");
   const primarySendId = sendReceipts[sendReceipts.length - 1]?.id;
 
-  if (!submission.receipts.length) return null;
+  if (!collection.receipts.length) return null;
 
   return (
     <section
@@ -1724,11 +1761,11 @@ function ReceiptTimeline({
     >
       <div className="receipt-timeline-heading">
         <span className="eyebrow">Histórico de comprovantes</span>
-        <small>{submission.receipts.length} evento(s) registrado(s)</small>
+        <small>{collection.receipts.length} evento(s) registrado(s)</small>
       </div>
 
       <div className="receipt-timeline-list" role="list">
-        {submission.receipts.map((receipt) => {
+        {collection.receipts.map((receipt) => {
           const isPrimarySend = receipt.kind === "envio" && receipt.id === primarySendId;
           return (
             <article
@@ -1754,7 +1791,7 @@ function ReceiptTimeline({
                 <div className="receipt-grid">
                   <div>
                     <span>Arquivo</span>
-                    <strong>{submission.fileName || "Sem arquivo (negativa)"}</strong>
+                    <strong>{collection.fileName || "Sem arquivo (indisponibilidade)"}</strong>
                   </div>
                   <div>
                     <span>Enviado em</span>
@@ -1766,7 +1803,7 @@ function ReceiptTimeline({
                   </div>
                   <div>
                     <span>Anexos</span>
-                    <strong>{submission.attachments.length} arquivo(s)</strong>
+                    <strong>{collection.attachments.length} arquivo(s)</strong>
                   </div>
                   <div>
                     <span>SEI</span>
@@ -1774,7 +1811,7 @@ function ReceiptTimeline({
                   </div>
                   <div>
                     <span>Status atual</span>
-                    <strong>{submissionLabel(submission.status)}</strong>
+                    <strong>{collectionLabel(collection.status)}</strong>
                   </div>
                 </div>
               ) : null}
@@ -1786,7 +1823,7 @@ function ReceiptTimeline({
   );
 }
 
-function ObservationThread({ observations }: { observations: SubmissionObservation[] }) {
+function ObservationThread({ observations }: { observations: CollectionObservation[] }) {
   if (!observations.length) return null;
   return (
     <div className="obs-thread">
@@ -1801,49 +1838,49 @@ function ObservationThread({ observations }: { observations: SubmissionObservati
   );
 }
 
-function SubmissionBlock({
-  submission,
+function CollectionBlock({
+  collection,
   respondent,
   requiredAttachments,
   children,
 }: {
-  submission: Submission;
+  collection: Collection;
   respondent?: Respondent;
   requiredAttachments: string[];
   children?: JSX.Element | null;
 }) {
   return (
-    <article className="submission-card">
-      <div className="submission-head">
+    <article className="collection-response-card">
+      <div className="collection-response-head">
         <div>
-          <strong>{submission.respondentName}</strong>
+          <strong>{collection.ownerName}</strong>
           <small>
             {respondent?.role || "Respondente técnico"}
             {respondent?.createdBySelf ? " · usuário criado pelo próprio usuário" : ""}
           </small>
         </div>
-        <StatusPill tone={submissionTone(submission.status)}>
-          {submissionLabel(submission.status)}
+        <StatusPill tone={collectionTone(collection.status)}>
+          {collectionLabel(collection.status)}
         </StatusPill>
       </div>
 
-      {submission.isNegative ? (
+      {collection.responseKind === "indisponibilidade" ? (
         <div className="alert">
           <Icon name="clock" />
           <div>
             <strong>Não tem a informação</strong>
-            <span>O respondente declarou formalmente que o órgão não detém este dado.</span>
+            <span>O responsável declarou formalmente que o órgão não detém este dado.</span>
           </div>
         </div>
       ) : (
         <div className="received-box">
           <Icon name="file" />
           <div>
-            <span>Planilha enviada em {submission.submittedAt}</span>
-            <strong>{submission.fileName}</strong>
+            <span>Planilha enviada em {collection.submittedAt}</span>
+            <strong>{collection.fileName || "Envio ainda não realizado"}</strong>
             {requiredAttachments.length ? (
               <span>
-                Anexos: {submission.attachments.length} enviados / {requiredAttachments.length} exigidos
+                Anexos: {collection.attachments.length} enviados / {requiredAttachments.length} exigidos
               </span>
             ) : (
               <span>Sem anexos obrigatórios nesta coleta</span>
@@ -1852,23 +1889,24 @@ function SubmissionBlock({
         </div>
       )}
 
-      {submission.attachments.length ? (
+      {collection.attachments.length ? (
         <div className="tag-cloud">
-          {submission.attachments.map((file) => (
+          {collection.attachments.map((file) => (
             <span key={file}>{file}</span>
           ))}
         </div>
       ) : null}
 
-      <ObservationThread observations={submission.observations} />
+      <ObservationThread observations={collection.observations} />
       {children ?? null}
     </article>
   );
 }
 
-function CycleTimeline({ cycle, submissions }: { cycle: CycleItem; submissions: Submission[] }) {
-  const sent = submissions.filter((item) => item.status !== "rascunho");
-  const decided = sent.some((item) => item.status === "aprovado" || item.status === "reaberto");
+function CycleTimeline({ cycle, collections }: { cycle: CycleItem; collections: Collection[] }) {
+  const sent = collections.filter(collectionWasSubmitted);
+  const decided = sent.some((item) => item.status === "aprovada" || item.status === "em-correcao");
+  const operationalStatus = deriveCycleStatus(cycle, collections);
   const events = [
     {
       icon: "file" as const,
@@ -1878,23 +1916,25 @@ function CycleTimeline({ cycle, submissions }: { cycle: CycleItem; submissions: 
     },
     {
       icon: "link" as const,
-      title: "Link da coleta gerado e anexado ao SEI",
-      text: `${cycle.collectionIds.length} coleta(s) criada(s) — único elo entre SEI e plataforma.`,
-      done: true,
+      title: "Link do ciclo gerado e anexado ao SEI",
+      text: cycleLink(cycle)
+        ? "Um único link do ciclo direciona cada conta à sua coleta individual."
+        : "O link será gerado após a aprovação do ciclo.",
+      done: Boolean(cycleLink(cycle)),
     },
     {
       icon: "send" as const,
-      title: "Submissões dos respondentes",
+      title: "Coletas dos responsáveis",
       text: sent.length
-        ? `${sent.length} submissão(ões) identificadas recebidas.`
+        ? `${sent.length} coleta(s) individual(is) recebida(s).`
         : "Aguardando envios pela plataforma.",
       done: sent.length > 0,
     },
     {
-      icon: cycle.status === "correcao" ? ("refresh" as const) : ("clipboard" as const),
-      title: cycle.status === "correcao" ? "Devolvido para correção" : "Verificação da STC",
+      icon: sent.some((item) => item.status === "em-correcao") ? ("refresh" as const) : ("clipboard" as const),
+      title: sent.some((item) => item.status === "em-correcao") ? "Devolvido para correção" : "Verificação da STC",
       text:
-        cycle.status === "correcao"
+        sent.some((item) => item.status === "em-correcao")
           ? "Rejeição com justificativa reabriu a coleta para a UG."
           : decided
             ? "Conteúdo conferido manualmente pela equipe."
@@ -1905,10 +1945,10 @@ function CycleTimeline({ cycle, submissions }: { cycle: CycleItem; submissions: 
       icon: "check" as const,
       title: "Fechamento",
       text:
-        cycle.status === "finalizado"
+        operationalStatus === "finalizado"
           ? "Comprovantes emitidos. Registro no SEI, se houver, é manual da STC."
           : "Será registrado após a aprovação das respostas.",
-      done: cycle.status === "finalizado",
+      done: operationalStatus === "finalizado",
     },
   ];
 
@@ -2000,7 +2040,7 @@ function StcDashboard({
   cycles: CycleItem[];
   collections: Collection[];
   ugList: Ug[];
-  copyLink: (collection: Collection) => Promise<void>;
+  copyLink: (cycle: CycleItem) => Promise<void>;
   openDetail: (cycleId: string) => void;
   openValidation: (cycleId: string) => void;
   openCreation: (cycleId: string) => void;
@@ -2014,12 +2054,16 @@ function StcDashboard({
   });
 
   const filteredCycles = cycles.filter((cycle) => {
+    const operationalStatus = deriveCycleStatus(cycle, collections);
     const statusMatch =
       filters.status === "todos" ||
-      (cycle.creationStatus === "aprovado" && cycle.status === filters.status);
+      (cycle.creationStatus === "aprovado" && operationalStatus === filters.status);
     const objectMatch = filters.object === "todos" || cycle.objectCode === filters.object;
     const ugMatch = filters.ug === "todos" || cycle.ugIds.includes(filters.ug);
-    const dateMatch = !filters.date || cycle.deadline === filters.date || cycle.createdAt.includes(filters.date);
+    const dateMatch =
+      !filters.date ||
+      cycle.deadline === filters.date ||
+      dateIsoAtTimezoneOffset(new Date(cycle.createdAtIso)) === filters.date;
     return statusMatch && objectMatch && ugMatch && dateMatch;
   });
 
@@ -2027,29 +2071,32 @@ function StcDashboard({
 
   const operationalCycles = cycles.filter((cycle) => cycle.creationStatus === "aprovado");
   // §1.2: a mesma paleta dos status vale para os KPIs — amarelo/laranja = alguém precisa agir.
+  const operationalCollections = collections.filter((collection) =>
+    operationalCycles.some((cycle) => cycle.id === collection.cycleId),
+  );
   const metrics = [
-    ["Coletas ativas", operationalCycles.filter((cycle) => cycle.status === "ativo").length, "Aguardando envios das UGs", "info"] as const,
+    ["Ciclos em andamento", operationalCycles.filter((cycle) => deriveCycleStatus(cycle, collections) === "em-andamento").length, "Coletas individuais em curso", "info"] as const,
     [
       "Aguardando ponto focal",
-      operationalCycles.filter((cycle) => cycle.status === "aguardando-ponto-focal").length,
-      "Respostas para validação do órgão",
+      operationalCollections.filter((collection) => collection.status === "aguardando-ponto-focal").length,
+      "Coletas para validação do órgão",
       "warning",
     ] as const,
     [
       "Aguardando análise da STC",
-      operationalCycles.filter((cycle) => cycle.status === "aguardando-analise-stc").length,
-      "Respostas novas para conferir",
+      operationalCollections.filter((collection) => collection.status === "aguardando-stc").length,
+      "Coletas novas para conferir",
       "warning",
     ] as const,
     [
       "Aguardando correção",
-      operationalCycles.filter((cycle) => cycle.status === "correcao").length,
+      operationalCollections.filter((collection) => collection.status === "em-correcao").length,
       "Devolvidas para a UG corrigir",
       "orange",
     ] as const,
     [
       "Não enviadas no prazo",
-      operationalCycles.filter((cycle) => cycle.status === "nao-enviado-no-prazo").length,
+      operationalCycles.filter((cycle) => deriveCycleStatus(cycle, collections) === "sem-envio-no-prazo").length,
       "Prazo venceu sem resposta",
       "danger",
     ] as const,
@@ -2193,15 +2240,16 @@ function StcDashboard({
                     {cycle.requiresFocalPointValidation ? "validação do ponto focal" : "envio direto à STC"}
                   </span>
                 </div>
-                <StatusPill tone={cycleTone(cycle.status)}>{cycleLabel(cycle.status)}</StatusPill>
+                <StatusPill tone={cycleTone(deriveCycleStatus(cycle, collections))}>
+                  {cycleLabel(deriveCycleStatus(cycle, collections))}
+                </StatusPill>
               </div>
 
               {(() => {
                 const cols = collections.filter((item) => item.cycleId === cycle.id);
-                const responded = cols.filter((col) =>
-                  col.submissions.some((sub) => sub.status !== "rascunho"),
-                ).length;
-                const late = isPastDeadline(cycle.deadline) && cycle.status !== "finalizado";
+                const responded = cols.filter(collectionWasSubmitted).length;
+                const late = isPastDeadline(cycle.deadline) && deriveCycleStatus(cycle, collections) !== "finalizado";
+                const cycleUrl = cycleLink(cycle);
                 return (
                   <>
                     <div className="cycle-progress">
@@ -2226,31 +2274,34 @@ function StcDashboard({
                       <small>{cycleBreakdown(cols)}</small>
                     </div>
                     <div className="cycle-ug-chips">
-                      {cols.map((col) => {
-                        const ug = ugList.find((item) => item.id === col.ugId);
-                        const sent = col.submissions.some((sub) => sub.status !== "rascunho");
+                      {cycle.ugIds.map((ugId) => {
+                        const ug = ugList.find((item) => item.id === ugId);
+                        const ugCollections = cols.filter((item) => item.ugId === ugId);
+                        const sent = ugCollections.some(collectionWasSubmitted);
                         return (
-                          <span key={col.id} className={sent ? "ug-chip responded" : "ug-chip"}>
+                          <span key={ugId} className={sent ? "ug-chip responded" : "ug-chip"}>
                             <span className="ug-chip-label">
                               {sent ? <Icon name="check" size={12} /> : null}
-                              {ug?.acronym ?? col.ugId}
+                              {ug?.acronym ?? ugId} · {ugCollections.length} coleta(s)
                             </span>
-                            <code className="collection-link-text">
-                              {`https://${collectionLink(col)}`}
-                            </code>
-                            <button
-                              type="button"
-                              className="chip-link"
-                              onClick={() => void copyLink(col)}
-                              aria-label={`Copiar link da coleta da ${ug?.acronym ?? col.ugId}`}
-                            >
-                              <Icon name="link" size={12} />
-                              Copiar link
-                            </button>
                           </span>
                         );
                       })}
                     </div>
+                    {cycleUrl ? (
+                      <article className="cycle-link-card">
+                        <code className="collection-link-text">{`https://${cycleUrl}`}</code>
+                        <button
+                          type="button"
+                          className="chip-link"
+                          onClick={() => void copyLink(cycle)}
+                          aria-label="Copiar link do ciclo"
+                        >
+                          <Icon name="link" size={12} />
+                          Copiar link do ciclo
+                        </button>
+                      </article>
+                    ) : null}
                     <div className="cycle-meta-grid">
                       <span>criada em {cycle.createdAt}</span>
                       <label>
@@ -2266,7 +2317,7 @@ function StcDashboard({
               })()}
 
               <div className="cycle-row-note">
-                <span>{cycleStatusHelp(cycle)}</span>
+                <span>{cycleStatusHelp(deriveCycleStatus(cycle, collections))}</span>
               </div>
 
               <div className="card-actions compact">
@@ -2523,6 +2574,7 @@ function StcCreateCycle({
     selectedUgRows.length > 0 &&
     selectedFields.length > 0 &&
     draft.title.trim().length > 0 &&
+    isValidIsoDate(draft.deadline) &&
     draft.notificationChannel.trim().length > 0;
 
   const toggleUg = (ugId: string) => {
@@ -2722,7 +2774,7 @@ function StcCreateCycle({
             <div>
               <strong>Exige validação do ponto focal antes do envio</strong>
               <p>
-                Ligado: a submissão fica "aguardando ponto focal" até ele dar ciência. Desligado: vai
+                Ligado: a coleta fica "aguardando ponto focal" até ele dar ciência. Desligado: vai
                 direto à STC.
               </p>
             </div>
@@ -2853,6 +2905,7 @@ function StcCreationReview({
   ugList,
   fieldCatalog,
   attachments,
+  requiredAttachmentsOf,
   initialCycleId,
   onReview,
 }: {
@@ -2861,6 +2914,7 @@ function StcCreationReview({
   ugList: Ug[];
   fieldCatalog: readonly FieldDefinition[];
   attachments: readonly AttachmentDefinition[];
+  requiredAttachmentsOf: (object: TransparencyObject) => string[];
   initialCycleId: string;
   onReview: (
     cycleId: string,
@@ -2921,6 +2975,7 @@ function StcCreationReview({
       (reviewDraft.objectKind === "fixo" || reviewDraft.objectName.trim()) &&
       reviewDraft.ugIds.length &&
       reviewDraft.metadataIds.length &&
+      isValidIsoDate(reviewDraft.deadline) &&
       reviewDraft.notificationChannel.trim(),
   );
 
@@ -3044,7 +3099,7 @@ function StcCreationReview({
                         objectName: titleCase(object.name),
                         objectKind: "fixo",
                         metadataIds: requiredFieldIdsForObject(object),
-                        requiredAttachments: requiredAttachmentsForObject(object),
+                        requiredAttachments: requiredAttachmentsOf(object),
                       });
                     }}
                   >
@@ -3241,27 +3296,31 @@ function StcCreationReview({
 function StcCycleDetail({
   cycle,
   collections,
+  signals,
   ugList,
   setView,
   openValidation,
-  openCollectionLink,
+  openCycleLink,
 }: {
   cycle: CycleItem;
   collections: Collection[];
+  signals: FocalSignal[];
   ugList: Ug[];
   setView: (view: View) => void;
   openValidation: (cycleId: string) => void;
-  openCollectionLink: (collectionId: string) => void;
+  openCycleLink: (cycleId: string) => void;
 }) {
   const cycleCollections = collections.filter((item) => item.cycleId === cycle.id);
-  const submissions = cycleCollections.flatMap((item) => item.submissions);
+  const cycleSignals = signals.filter((item) => item.cycleId === cycle.id);
+  const sharedLink = cycleLink(cycle);
+  const operationalStatus = deriveCycleStatus(cycle, collections);
 
   return (
     <div className="workflow-page wide-page">
       <SectionHeader
-        eyebrow="Detalhes da coleta"
+        eyebrow="Detalhes do ciclo"
         title={cycle.title}
-        description="Links por UG, histórico e validação ficam ligados à coleta selecionada no painel."
+        description="O ciclo possui um link único; dentro dele, a STC acompanha as coletas individuais por UG e responsável."
       />
 
       <div className="detail-layout">
@@ -3270,9 +3329,9 @@ function StcCycleDetail({
             <div>
               <span className="eyebrow">{cycle.objectCode}</span>
               <h3>{cycle.objectName}</h3>
-              <p>{cycleStatusHelp(cycle)}</p>
+              <p>{cycleStatusHelp(operationalStatus)}</p>
             </div>
-            <StatusPill tone={cycleTone(cycle.status)}>{cycleLabel(cycle.status)}</StatusPill>
+            <StatusPill tone={cycleTone(operationalStatus)}>{cycleLabel(operationalStatus)}</StatusPill>
           </div>
           <div className="cycle-summary">
             <div>
@@ -3316,47 +3375,75 @@ function StcCycleDetail({
         </section>
 
         <section className="card">
-          <span className="eyebrow">Coletas e links</span>
-          <h3>Um link por coleta, anexado ao SEI</h3>
+          <span className="eyebrow">Acesso pelo SEI</span>
+          <h3>Um link por ciclo, anexado ao SEI</h3>
           <p className="muted-text">
-            Qualquer pessoa da UG acessa pelo link; toda submissão é identificada. Nada volta ao SEI
-            automaticamente.
+            A conta autenticada define a UG e a coleta individual exibida. O mesmo link atende todas as
+            unidades do ciclo e não cria duplicidades.
           </p>
+          {sharedLink ? (
+            <div className="collection-row cycle-shared-link">
+              <span className="link-chip"><Icon name="link" size={14} />{sharedLink}</span>
+              <button type="button" className="ghost-button" onClick={() => openCycleLink(cycle.id)}>
+                <Icon name="send" size={16} />
+                Simular acesso pelo link
+              </button>
+            </div>
+          ) : null}
           <div className="collection-list">
-            {cycleCollections.map((collection) => {
-              const ug = ugList.find((item) => item.id === collection.ugId);
-              const sent = collection.submissions.filter((item) => item.status !== "rascunho");
+            {cycle.ugIds.map((ugId) => {
+              const ug = ugList.find((item) => item.id === ugId);
+              const ugCollections = cycleCollections.filter((item) => item.ugId === ugId);
+              const sent = ugCollections.filter(collectionWasSubmitted);
               return (
-                <div key={collection.id} className="collection-row">
+                <div key={ugId} className="collection-row">
                   <div>
-                    <strong>{ug?.acronym ?? collection.ugId}</strong>
+                    <strong>{ug?.acronym ?? ugId}</strong>
                     <small>
                       {sent.length
-                        ? `${sent.length} submissão(ões) recebidas`
-                        : "Nenhuma submissão até agora"}
-                      {collection.requiredAttachments.length
-                        ? ` · ${collection.requiredAttachments.length} anexos obrigatórios`
+                        ? `${sent.length} coleta(s) individual(is) recebida(s)`
+                        : "Nenhuma coleta enviada até agora"}
+                      {cycle.requiredAttachments.length
+                        ? ` · ${cycle.requiredAttachments.length} anexos obrigatórios`
                         : ""}
                     </small>
                   </div>
-                  <span className="link-chip">
-                    <Icon name="link" size={14} />
-                    {collectionLink(collection)}
-                  </span>
-                  <button
-                    type="button"
-                    className="ghost-button"
-                    onClick={() => openCollectionLink(collection.id)}
-                  >
-                    <Icon name="send" size={16} />
-                    Simular acesso pelo link
-                  </button>
+                  <span>{ugCollections.length} responsável(is)</span>
                 </div>
               );
             })}
           </div>
         </section>
       </div>
+
+      {cycleSignals.length ? (
+        <section className="card focal-signals-card" aria-labelledby="focal-signals-title">
+          <div className="table-header">
+            <div>
+              <span className="eyebrow">Comunicação operacional</span>
+              <h3 id="focal-signals-title">Sinalizações dos pontos focais</h3>
+            </div>
+            <StatusPill tone="info">Somente leitura</StatusPill>
+          </div>
+          <div className="focal-signal-list" role="list">
+            {cycleSignals.map((signal) => {
+              const ug = ugList.find((item) => item.id === signal.ugId);
+              return (
+                <article key={signal.id} className="focal-signal-item" role="listitem">
+                  <div>
+                    <strong>{ug?.acronym ?? signal.ugId}</strong>
+                    <span>
+                      {signal.kind === "duvida" ? "Dúvida para intermediação" : "Informação indisponível"}
+                    </span>
+                  </div>
+                  <p>{signal.message}</p>
+                  <small>{signal.author} · {signal.createdAt}</small>
+                </article>
+              );
+            })}
+          </div>
+        </section>
+      ) : null}
 
       <section className="card cycle-list-card">
         <div className="table-header">
@@ -3365,17 +3452,17 @@ function StcCycleDetail({
             <h3>Eventos registrados</h3>
           </div>
         </div>
-        <CycleTimeline cycle={cycle} submissions={submissions} />
+        <CycleTimeline cycle={cycle} collections={cycleCollections} />
       </section>
     </div>
   );
 }
 
 function DecisionBox({
-  submission,
+  collection,
   onDecide,
 }: {
-  submission: Submission;
+  collection: Collection;
   onDecide: (decision: "aprovar" | "rejeitar", reason: string) => void;
 }) {
   const [reason, setReason] = useState("");
@@ -3406,7 +3493,7 @@ function DecisionBox({
           onClick={() => onDecide("aprovar", "")}
         >
           <Icon name="check" />
-          {submission.isNegative ? "Registrar ciência da negativa" : "Aprovar resposta"}
+          {collection.responseKind === "indisponibilidade" ? "Registrar ciência da indisponibilidade" : "Aprovar resposta"}
         </button>
       </div>
     </div>
@@ -3416,6 +3503,7 @@ function DecisionBox({
 function StcValidation({
   cycle,
   collections,
+  signals,
   respondents,
   ugList,
   validationCollectionId,
@@ -3425,54 +3513,72 @@ function StcValidation({
 }: {
   cycle: CycleItem;
   collections: Collection[];
+  signals: FocalSignal[];
   respondents: Respondent[];
   ugList: Ug[];
   validationCollectionId: string;
   setValidationCollectionId: (id: string) => void;
-  onDecide: (collectionId: string, submissionId: string, decision: "aprovar" | "rejeitar", reason: string) => void;
+  onDecide: (collectionId: string, decision: "aprovar" | "rejeitar", reason: string) => void;
   setView: (view: View) => void;
 }) {
   const cycleCollections = collections.filter((item) => item.cycleId === cycle.id);
+  const cycleSignals = signals.filter((item) => item.cycleId === cycle.id);
   const current =
     cycleCollections.find((item) => item.id === validationCollectionId) ?? cycleCollections[0];
-  const currentSubmissions = current
-    ? current.submissions.filter((item) => item.status !== "rascunho")
-    : [];
+  const currentWasSent = current ? collectionWasSubmitted(current) : false;
   const overdue = isPastDeadline(cycle.deadline);
+  const operationalStatus = deriveCycleStatus(cycle, collections);
 
   return (
     <div className="workflow-page wide-page">
       <SectionHeader
         eyebrow="Validação STC"
         title="Receber, aprovar ou rejeitar"
-        description="A checagem estrutural já rodou no envio; aqui a STC confere o conteúdo manualmente. As submissões aparecem separadas por setor — unificar num arquivo só é melhoria futura."
+        description="A checagem estrutural já rodou no envio; aqui a STC confere cada coleta individual, agrupada por UG e responsável."
       />
+
+      {cycleSignals.length ? (
+        <section className="card focal-signals-card" aria-labelledby="validation-signals-title">
+          <div className="table-header">
+            <div>
+              <span className="eyebrow">Antes de validar</span>
+              <h3 id="validation-signals-title">Sinalizações recebidas dos pontos focais</h3>
+            </div>
+            <StatusPill tone="info">Somente leitura</StatusPill>
+          </div>
+          <div className="focal-signal-list" role="list">
+            {cycleSignals.map((signal) => (
+              <article key={signal.id} className="focal-signal-item" role="listitem">
+                <div>
+                  <strong>{ugList.find((item) => item.id === signal.ugId)?.acronym ?? signal.ugId}</strong>
+                  <span>{signal.kind === "duvida" ? "Dúvida" : "Informação indisponível"}</span>
+                </div>
+                <p>{signal.message}</p>
+                <small>{signal.author} · {signal.createdAt}</small>
+              </article>
+            ))}
+          </div>
+        </section>
+      ) : null}
 
       <div className="validation-grid">
         <section className="card">
           <div className="table-header">
             <h3>Coletas do acionamento</h3>
-            <StatusPill tone={cycleTone(cycle.status)}>{cycleLabel(cycle.status)}</StatusPill>
+            <StatusPill tone={cycleTone(operationalStatus)}>{cycleLabel(operationalStatus)}</StatusPill>
           </div>
 
           <div className="data-table">
             <div className="table-row head">
               <span>UG</span>
-              <span>Submissões</span>
+              <span>Responsável</span>
               <span>Situação</span>
             </div>
             {cycleCollections.map((collection) => {
               const ug = ugList.find((item) => item.id === collection.ugId);
-              const sent = collection.submissions.filter((item) => item.status !== "rascunho");
-              // Correção 5: "Atrasada" é condição derivada (pendente + prazo vencido), nunca status persistido.
-              const late = !sent.length && overdue;
-              const hint = sent.length
-                ? sent.some((item) => item.status === "reaberto")
-                  ? "Em correção"
-                  : sent.every((item) => item.status === "aprovado")
-                    ? "Aprovadas"
-                    : "Aguardando decisão"
-                : "Sem envio";
+              const sent = collectionWasSubmitted(collection);
+              const late = !sent && overdue;
+              const hint = collectionLabel(collection.status);
               return (
                 <button
                   type="button"
@@ -3488,7 +3594,7 @@ function StcValidation({
                     <strong>{ug?.acronym ?? collection.ugId}</strong>
                     <small>{ug?.contact ?? "Unidade gestora"}</small>
                   </span>
-                  <span>{sent.length ? `${sent.length} recebida(s)` : "—"}</span>
+                  <span>{collection.ownerName}</span>
                   <span>
                     {late ? <StatusPill tone="danger">Atrasada</StatusPill> : hint}
                   </span>
@@ -3506,9 +3612,9 @@ function StcValidation({
         <section className="card">
           <span className="eyebrow">Coleta da {ugList.find((item) => item.id === current?.ugId)?.acronym ?? "UG"}</span>
           <h3>{cycle.objectName}</h3>
-          {current?.requiredAttachments.length ? (
+          {cycle.requiredAttachments.length ? (
             <p className="muted-text">
-              Anexos obrigatórios: {current.requiredAttachments.join(", ")}. A checagem estrutural
+              Anexos obrigatórios: {cycle.requiredAttachments.join(", ")}. A checagem estrutural
               confere a contagem (enviados ≥ exigidos) — nunca o nome nem o conteúdo dos arquivos.
             </p>
           ) : (
@@ -3531,45 +3637,43 @@ function StcValidation({
             </>
           ) : null}
 
-          {!currentSubmissions.length ? (
+          {!currentWasSent ? (
             <div className="empty-state">
               <Icon name="clock" size={28} />
               <strong>{overdue ? "Não enviado no prazo" : "Aguardando envio"}</strong>
               <span>
                 {overdue
-                  ? "O prazo terminou sem submissões — estado distinto de resposta negativa."
-                  : "Nenhum respondente desta coleta enviou pela plataforma até agora."}
+                  ? "O prazo terminou sem envio — estado distinto de indisponibilidade informada."
+                  : "O responsável ainda não enviou esta coleta pela plataforma."}
               </span>
             </div>
-          ) : (
-            currentSubmissions.map((submission) => (
-              <SubmissionBlock
-                key={submission.id}
-                submission={submission}
-                respondent={respondents.find((item) => item.id === submission.respondentId)}
-                requiredAttachments={current?.requiredAttachments ?? []}
+          ) : current ? (
+              <CollectionBlock
+                collection={current}
+                respondent={respondents.find((item) => item.id === current.ownerId)}
+                requiredAttachments={cycle.requiredAttachments}
               >
                 <>
-                  <ReceiptTimeline submission={submission} seiNumber={cycle.seiNumber} compact />
-                  {submission.status === "aguardando-ponto-focal" ? (
+                  <ReceiptTimeline collection={current} seiNumber={cycle.seiNumber} compact />
+                  {current.status === "aguardando-ponto-focal" ? (
                     <p className="muted-text">
-                      Aguardando validação do ponto focal — a submissão chega à STC após o
+                      Aguardando validação do ponto focal — a coleta chega à STC após o
                       encaminhamento.
                     </p>
-                  ) : submission.status === "reaberto" ? (
+                  ) : current.status === "em-correcao" ? (
                     <p className="muted-text">Devolvida para correção — aguardando reenvio da UG.</p>
-                  ) : submission.status === "aprovado" ? null : (
+                  ) : current.status === "aprovada" ? null : (
                     <DecisionBox
-                      submission={submission}
+                      key={current.id}
+                      collection={current}
                       onDecide={(decision, reason) =>
-                        current ? onDecide(current.id, submission.id, decision, reason) : undefined
+                        onDecide(current.id, decision, reason)
                       }
                     />
                   )}
                 </>
-              </SubmissionBlock>
-            ))
-          )}
+              </CollectionBlock>
+          ) : null}
         </section>
       </div>
     </div>
@@ -3691,7 +3795,7 @@ function StcRegistry({
 
   const submitUgWizard = () => {
     if (!onCreateUg(ugForm)) {
-      setUgCreateError("Já existe uma UG com essa sigla ou identificador.");
+      setUgCreateError("Já existe uma UG com essa sigla, identificador ou e-mail de ponto focal.");
       setWizardStep(1);
       return;
     }
@@ -4345,7 +4449,7 @@ function StcRegistry({
                         }
                         onClick={() => {
                           if (!onUpdateUg(ug.id, editForm)) {
-                            setUgEditError("Já existe uma UG com essa sigla.");
+                            setUgEditError("Já existe uma UG com essa sigla ou e-mail de ponto focal.");
                             return;
                           }
                           setEditingUgId("");
@@ -4476,7 +4580,8 @@ function StcHistory({
   const [openCycleId, setOpenCycleId] = useState("");
 
   const rows = cycles.filter((cycle) => {
-    const statusMatch = filters.status === "todos" || cycle.status === filters.status;
+    const statusMatch =
+      filters.status === "todos" || deriveCycleStatus(cycle, collections) === filters.status;
     const objectMatch = filters.object === "todos" || cycle.objectCode === filters.object;
     const ugMatch = filters.ug === "todos" || cycle.ugIds.includes(filters.ug);
     const dateFromMatch = !filters.dateFrom || cycle.deadline >= filters.dateFrom;
@@ -4486,7 +4591,7 @@ function StcHistory({
       `${cycle.title} ${cycle.objectCode} ${cycle.seiNumber}`.toLowerCase().includes(search.trim().toLowerCase());
     return statusMatch && objectMatch && ugMatch && dateFromMatch && dateToMatch && searchMatch;
   });
-  const openCycle = cycles.find((item) => item.id === openCycleId) ?? null;
+  const openCycle = rows.find((item) => item.id === openCycleId) ?? null;
   const objectOptions = [...new Set(cycles.map((cycle) => cycle.objectCode))];
 
   return (
@@ -4580,8 +4685,8 @@ function StcHistory({
               {rows.map((cycle) => {
                 const sent = collections
                   .filter((item) => item.cycleId === cycle.id)
-                  .flatMap((item) => item.submissions)
-                  .filter((item) => item.status !== "rascunho");
+                  .filter(collectionWasSubmitted);
+                const status = deriveCycleStatus(cycle, collections);
                 return (
                   <div key={cycle.id} className="history-row">
                     <span>
@@ -4591,7 +4696,7 @@ function StcHistory({
                     <span>{cycle.ugIds.map((id) => ugList.find((ug) => ug.id === id)?.acronym ?? id).join(", ")}</span>
                     <span>{kindLabel(cycle.objectKind)}</span>
                     <span>
-                      <StatusPill tone={cycleTone(cycle.status)}>{cycleLabel(cycle.status)}</StatusPill>
+                      <StatusPill tone={cycleTone(status)}>{cycleLabel(status)}</StatusPill>
                     </span>
                     <span>{cycle.deadline}</span>
                     <span>{String(sent.length)}</span>
@@ -4629,15 +4734,12 @@ function StcHistory({
             .filter((item) => item.cycleId === openCycle.id)
             .map((collection) => {
               const ug = ugList.find((item) => item.id === collection.ugId);
-              const sent = collection.submissions.filter((item) => item.status !== "rascunho");
+              const sent = collectionWasSubmitted(collection);
               return (
                 <div key={collection.id} className="collection-block">
                   <div className="table-header">
-                    <strong>{ug?.acronym ?? collection.ugId}</strong>
-                    <span className="link-chip">
-                      <Icon name="link" size={14} />
-                      {collectionLink(collection)}
-                    </span>
+                    <strong>{ug?.acronym ?? collection.ugId} · {collection.ownerName}</strong>
+                    <StatusPill tone={collectionTone(collection.status)}>{collectionLabel(collection.status)}</StatusPill>
                   </div>
                   {collection.attachmentJustifications.length ? (
                     <>
@@ -4645,19 +4747,16 @@ function StcHistory({
                       <ObservationThread observations={collection.attachmentJustifications} />
                     </>
                   ) : null}
-                  {sent.length ? (
-                    sent.map((submission) => (
-                      <SubmissionBlock
-                        key={submission.id}
-                        submission={submission}
-                        respondent={respondents.find((item) => item.id === submission.respondentId)}
-                        requiredAttachments={collection.requiredAttachments}
+                  {sent ? (
+                      <CollectionBlock
+                        collection={collection}
+                        respondent={respondents.find((item) => item.id === collection.ownerId)}
+                        requiredAttachments={openCycle.requiredAttachments}
                       >
-                        {submission.protocol ? (
-                          <ReceiptTimeline submission={submission} seiNumber={openCycle.seiNumber} compact />
+                        {collection.protocol ? (
+                          <ReceiptTimeline collection={collection} seiNumber={openCycle.seiNumber} compact />
                         ) : null}
-                      </SubmissionBlock>
-                    ))
+                      </CollectionBlock>
                   ) : (
                     <div className="empty-state">
                       <Icon name="clock" size={28} />
@@ -4682,37 +4781,53 @@ function FocalDashboard({
   cycles,
   collections,
   respondents,
-  ugList,
-  openCycle,
+  focalUg,
+  expandedCycleId,
+  setExpandedCycleId,
+  openCollection,
+  onAddRespondent,
+  onRespondAsFocal,
+  onSignal,
 }: {
   cycles: CycleItem[];
   collections: Collection[];
   respondents: Respondent[];
-  ugList: Ug[];
-  openCycle: (cycleId: string) => void;
+  focalUg: Ug;
+  expandedCycleId: string;
+  setExpandedCycleId: (cycleId: string) => void;
+  openCollection: (collectionId: string) => void;
+  onAddRespondent: (cycleId: string, name: string, email: string) => void;
+  onRespondAsFocal: (cycleId: string) => void;
+  onSignal: (
+    cycleId: string,
+    kind: FocalSignal["kind"],
+    message: string,
+  ) => void;
 }) {
-  const orgUg = ugList.find((item) => item.id === focalUser.ugId);
+  const [registerCycleId, setRegisterCycleId] = useState("");
+  const [signalCycleId, setSignalCycleId] = useState("");
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [signalKind, setSignalKind] = useState<FocalSignal["kind"]>("duvida");
+  const [signalMessage, setSignalMessage] = useState("");
   const orgCycles = cycles.filter(
-    (cycle) => cycle.creationStatus === "aprovado" && cycle.ugIds.includes(focalUser.ugId),
+    (cycle) => cycle.creationStatus === "aprovado" && cycle.ugIds.includes(focalUg.id),
   );
-  const orgCollections = collections.filter((item) => item.ugId === focalUser.ugId);
-  const orgSubmissions = orgCollections
-    .flatMap((item) => item.submissions)
-    .filter((item) => item.status !== "rascunho");
-  const awaiting = orgSubmissions.filter((item) => item.status === "aguardando-ponto-focal").length;
+  const orgCollections = collections.filter((item) => item.ugId === focalUg.id);
+  const awaiting = orgCollections.filter((item) => item.status === "aguardando-ponto-focal").length;
 
   const metrics = [
     ["Aguardando sua validação", awaiting, "Dar ciência e encaminhar", "warning"] as const,
-    ["Coletas do órgão", orgCycles.length, "Visão completa do ponto focal", "info"] as const,
+    ["Ciclos do órgão", orgCycles.length, `Somente os ciclos da ${focalUg.acronym}`, "info"] as const,
     [
       "Em correção",
-      orgCycles.filter((cycle) => cycle.status === "correcao").length,
+      orgCollections.filter((collection) => collection.status === "em-correcao").length,
       "Reabertas pela STC",
       "orange",
     ] as const,
     [
-      "Finalizadas",
-      orgCycles.filter((cycle) => cycle.status === "finalizado").length,
+      "Coletas aprovadas",
+      orgCollections.filter((collection) => collection.status === "aprovada").length,
       "Com comprovante",
       "success",
     ] as const,
@@ -4721,9 +4836,9 @@ function FocalDashboard({
   return (
     <div className="workflow-page ug-home wide-page">
       <SectionHeader
-        eyebrow={`Painel do ponto focal · ${orgUg?.acronym ?? ""}`}
-        title={`${focalUser.name} — ${orgUg?.name ?? ""}`}
-        description="O ponto focal vê todas as coletas do órgão e todas as respostas. Pode responder ou apenas monitorar — e valida antes do envio à STC quando a coleta exige."
+        eyebrow={`Painel do ponto focal · ${focalUg.acronym}`}
+        title={`${focalUg.focalName} — ${focalUg.name}`}
+        description="Acompanhe os ciclos destinados ao seu órgão. Expanda um ciclo para ver e verificar cada coleta individual."
       />
 
       <div className="metrics-grid dashboard-metrics">
@@ -4746,7 +4861,7 @@ function FocalDashboard({
             <strong>
               {awaiting} resposta{awaiting > 1 ? "s" : ""} aguardando sua validação
             </strong>
-            <span>Abra a coleta para validar e encaminhar à STC — ou devolver ao respondente.</span>
+            <span>Abra a coleta individual para conferir planilha, anexos e encaminhar à STC.</span>
           </div>
         </div>
       ) : null}
@@ -4754,63 +4869,157 @@ function FocalDashboard({
       <section className="card cycle-list-card ug-list-card">
         <div className="table-header">
           <div>
-            <span className="eyebrow">Coletas do órgão</span>
-            <h3>Solicitações recebidas da STC — com as respostas de cada uma</h3>
+            <span className="eyebrow">Ciclos do órgão</span>
+            <h3>Expanda um ciclo para ver as coletas por responsável</h3>
           </div>
           <StatusPill tone="info">Pedido no SEI · resposta na plataforma</StatusPill>
         </div>
 
         <div className="ug-cycle-list">
           {orgCycles.map((cycle) => {
-            const cycleSubs = orgCollections
-              .filter((item) => item.cycleId === cycle.id)
-              .flatMap((item) => item.submissions)
-              .filter((item) => item.status !== "rascunho");
-            // Correção 5: atraso derivado — coleta do órgão pendente com prazo vencido.
-            const late = !cycleSubs.length && isPastDeadline(cycle.deadline);
+            const cycleCollections = orgCollections.filter((item) => item.cycleId === cycle.id);
+            const cycleStatus = deriveCycleStatus(cycle, cycleCollections, focalUg.id);
+            const acceptsNewCollections = cycleAcceptsNewCollections(cycle, collections, focalUg.id);
+            const expanded = expandedCycleId === cycle.id;
+            const panelId = `focal-cycle-${cycle.id}`;
+            const toggleId = `focal-cycle-toggle-${cycle.id}`;
+            const registerPanelId = `focal-register-${cycle.id}`;
+            const signalPanelId = `focal-signal-${cycle.id}`;
             return (
-              <article key={cycle.id} className={`ug-cycle-row ${cycle.status}`}>
-                <div className="ug-cycle-status">
-                  <StatusPill tone={cycleTone(cycle.status)}>{cycleLabel(cycle.status, "orgao")}</StatusPill>
-                  <span>{cycle.deadline}</span>
-                  {late ? <StatusPill tone="danger">Atrasada</StatusPill> : null}
-                </div>
-                <div className="ug-cycle-main">
-                  <strong>{cycle.title}</strong>
-                  <span>
-                    {cycle.objectCode} · {kindLabel(cycle.objectKind)} · SEI {cycle.seiNumber || "a informar"}
-                  </span>
-                  <p>
-                    {cycle.requiresFocalPointValidation
-                      ? "Esta coleta exige sua validação antes do envio à STC."
-                      : "Envio direto à STC — você acompanha sem validação obrigatória."}
-                  </p>
-                  {/* §8.1: as submissões aparecem no painel — não só a contagem. */}
-                  <div className="focal-sub-list">
-                    {cycleSubs.length ? (
-                      cycleSubs.map((sub) => (
-                        <div key={sub.id} className="focal-sub-row">
-                          <strong>{sub.respondentName}</strong>
-                          <small>
-                            {respondents.find((item) => item.id === sub.respondentId)?.role ?? "Respondente técnico"} ·{" "}
-                            {sub.submittedAt}
-                          </small>
-                          <StatusPill tone={submissionTone(sub.status)}>{submissionLabel(sub.status)}</StatusPill>
-                        </div>
-                      ))
-                    ) : (
-                      <small className="muted-text">Nenhuma resposta ainda — o link da coleta está no SEI do órgão.</small>
-                    )}
+              <article key={cycle.id} className={`focal-cycle-accordion ${cycleStatus}`}>
+                <h3 className="focal-cycle-heading">
+                  <button
+                    id={toggleId}
+                    type="button"
+                    className="focal-cycle-toggle"
+                    aria-expanded={expanded}
+                    aria-controls={panelId}
+                    onClick={() => setExpandedCycleId(expanded ? "" : cycle.id)}
+                  >
+                    <span className="focal-cycle-summary">
+                      <span className="focal-cycle-title">
+                        <strong>{cycle.title}</strong>
+                        <small>{kindLabel(cycle.objectKind)} · SEI {cycle.seiNumber || "a informar"}</small>
+                      </span>
+                      <span className="focal-cycle-count">{cycleCollections.length} coleta(s)</span>
+                      <span className="focal-cycle-deadline">prazo {cycle.deadline}</span>
+                      <StatusPill tone={cycleTone(cycleStatus)}>{cycleLabel(cycleStatus, "orgao")}</StatusPill>
+                      <span className={`accordion-chevron${expanded ? " open" : ""}`} aria-hidden="true">⌄</span>
+                    </span>
+                  </button>
+                </h3>
+
+                {expanded ? (
+                  <div id={panelId} className="focal-cycle-panel" role="region" aria-labelledby={toggleId}>
+                    <div className="focal-cycle-rule">
+                      <Icon name={cycle.requiresFocalPointValidation ? "shield" : "send"} size={17} />
+                      <span>
+                        {cycle.requiresFocalPointValidation
+                          ? "O ponto focal confere e encaminha cada coleta antes da STC."
+                          : "As coletas seguem direto à STC; o ponto focal acompanha e intermedeia pendências."}
+                      </span>
+                    </div>
+
+                    <div className="focal-collection-list">
+                      {cycleCollections.length ? cycleCollections.map((collection) => {
+                        const respondent = respondents.find((item) => item.id === collection.ownerId);
+                        const late = !collectionWasSubmitted(collection) && isPastDeadline(cycle.deadline);
+                        return (
+                          <article key={collection.id} className="focal-collection-row">
+                            <div className="focal-collection-person">
+                              <span className="person-avatar" aria-hidden="true">{collection.ownerName.charAt(0)}</span>
+                              <span>
+                                <strong>{collection.ownerName}</strong>
+                                <small>
+                                  {collection.ownerType === "ponto-focal"
+                                    ? "Ponto focal"
+                                    : respondent?.role ?? "Respondente técnico"}
+                                </small>
+                              </span>
+                            </div>
+                            <span>{collection.fileName || "Nenhum arquivo enviado"}</span>
+                            <StatusPill tone={late ? "danger" : collectionTone(collection.status)}>
+                              {late ? "Atrasada" : collectionLabel(collection.status)}
+                            </StatusPill>
+                            <button
+                              type="button"
+                              className="secondary-button"
+                              onClick={() => openCollection(collection.id)}
+                            >
+                              <Icon name="eye" size={16} />
+                              {collectionWasSubmitted(collection) ? "Abrir resposta" : "Ver coleta"}
+                            </button>
+                          </article>
+                        );
+                      }) : (
+                        <div className="empty-state compact-empty"><strong>Nenhum responsável cadastrado</strong></div>
+                      )}
+                    </div>
+
+                    <div className="focal-cycle-actions">
+                      {acceptsNewCollections ? (
+                        <>
+                          <button type="button" className="secondary-button" aria-expanded={registerCycleId === cycle.id} aria-controls={registerPanelId} onClick={() => setRegisterCycleId(registerCycleId === cycle.id ? "" : cycle.id)}>
+                            <Icon name="users" size={16} />Adicionar respondente
+                          </button>
+                          <button type="button" className="secondary-button" onClick={() => onRespondAsFocal(cycle.id)}>
+                            <Icon name="edit" size={16} />Responder como ponto focal
+                          </button>
+                        </>
+                      ) : (
+                        <span className="focal-cycle-closed-note">Ciclo finalizado: novas coletas não podem ser criadas.</span>
+                      )}
+                      <button type="button" className="secondary-button" aria-expanded={signalCycleId === cycle.id} aria-controls={signalPanelId} onClick={() => setSignalCycleId(signalCycleId === cycle.id ? "" : cycle.id)}>
+                        <Icon name="bell" size={16} />Sinalizar à STC
+                      </button>
+                    </div>
+
+                    {acceptsNewCollections && registerCycleId === cycle.id ? (
+                      <form
+                        id={registerPanelId}
+                        className="focal-inline-form"
+                        onSubmit={(event) => {
+                          event.preventDefault();
+                          if (!name.trim() || !email.trim()) return;
+                          onAddRespondent(cycle.id, name.trim(), email.trim());
+                          setName("");
+                          setEmail("");
+                          setRegisterCycleId("");
+                        }}
+                      >
+                        <label>Nome do respondente<input value={name} onChange={(event) => setName(event.target.value)} /></label>
+                        <label>E-mail institucional<input type="email" value={email} onChange={(event) => setEmail(event.target.value)} /></label>
+                        <button
+                          type="submit"
+                          className="primary-button"
+                          disabled={!name.trim() || !email.trim()}
+                        >Criar coleta do respondente</button>
+                      </form>
+                    ) : null}
+
+                    {signalCycleId === cycle.id ? (
+                      <form
+                        id={signalPanelId}
+                        className="focal-inline-form signal-form"
+                        onSubmit={(event) => {
+                          event.preventDefault();
+                          if (!signalMessage.trim()) return;
+                          onSignal(cycle.id, signalKind, signalMessage.trim());
+                          setSignalMessage("");
+                          setSignalCycleId("");
+                        }}
+                      >
+                        <label>Tipo de sinalização<select value={signalKind} onChange={(event) => setSignalKind(event.target.value as FocalSignal["kind"])}><option value="duvida">Dúvida sobre o pedido</option><option value="informacao-indisponivel">Informação indisponível no órgão</option></select></label>
+                        <label>Mensagem para a STC<textarea value={signalMessage} onChange={(event) => setSignalMessage(event.target.value)} /></label>
+                        <button
+                          type="submit"
+                          className="primary-button"
+                          disabled={!signalMessage.trim()}
+                        >Registrar sinalização</button>
+                      </form>
+                    ) : null}
                   </div>
-                </div>
-                <div className="ug-cycle-meta">
-                  <span>{cycleSubs.length} resposta(s) do órgão</span>
-                  <span>{cycle.metadataLabels.length} campos</span>
-                </div>
-                <button type="button" className="primary-button ripple-button" onClick={() => openCycle(cycle.id)}>
-                  <Icon name="eye" />
-                  Abrir coleta
-                </button>
+                ) : null}
               </article>
             );
           })}
@@ -4862,54 +5071,44 @@ function FocalDecision({
   );
 }
 
-function FocalCycleDetail({
+function FocalCollectionDetail({
   cycle,
-  collections,
-  respondents,
+  collection,
+  respondent,
   onValidate,
   onReturn,
-  onRegisterRespondent,
   notify,
   setView,
 }: {
   cycle: CycleItem;
-  collections: Collection[];
-  respondents: Respondent[];
-  onValidate: (collectionId: string, submissionId: string) => void;
-  onReturn: (collectionId: string, submissionId: string, reason: string) => void;
-  onRegisterRespondent: (name: string, email: string, collectionId: string) => void;
+  collection: Collection;
+  respondent?: Respondent;
+  onValidate: (collectionId: string) => void;
+  onReturn: (collectionId: string, reason: string) => void;
   notify: (message: string) => void;
   setView: (view: View) => void;
 }) {
-  const orgCollections = collections.filter(
-    (item) => item.cycleId === cycle.id && item.ugId === focalUser.ugId,
-  );
-  const otherUgs = cycle.ugIds.filter((id) => id !== focalUser.ugId);
-  // §8.2: 1 coleta por órgão no ciclo — um único formulário de pré-cadastro atende o bloco.
-  const [name, setName] = useState("");
-  const [email, setEmail] = useState("");
+  const wasSubmitted = collectionWasSubmitted(collection);
 
   return (
     <div className="workflow-page wide-page">
       <SectionHeader
-        eyebrow="Coleta do órgão"
-        title={cycle.title}
-        description="Todas as respostas do seu órgão, com a identificação de quem enviou — e o cadastro de respondentes desta coleta."
+        eyebrow="Coleta individual"
+        title={`${cycle.objectCode} · ${cycle.objectName}`}
+        description={`Resposta de ${collection.ownerName} para o seu órgão. Aqui você confere a planilha, os anexos e o histórico desta coleta.`}
       />
 
       <div className="detail-layout">
         <section className="card cycle-highlight-card">
           <div className="cycle-highlight-head">
             <div>
-              <span className="eyebrow">{cycle.objectCode}</span>
-              <h3>{cycle.objectName}</h3>
-              <p>
-                {cycle.requiresFocalPointValidation
-                  ? "Validação do ponto focal exigida: dê ciência para encaminhar a resposta do órgão à STC."
-                  : "Envio direto à STC — você continua vendo tudo, sem aprovação obrigatória."}
-              </p>
+              <span className="eyebrow">Responsável</span>
+              <h3>{collection.ownerName}</h3>
+              <p>{respondent?.role ?? (collection.ownerType === "ponto-focal" ? "Ponto focal" : "Respondente técnico")}</p>
             </div>
-            <StatusPill tone={cycleTone(cycle.status)}>{cycleLabel(cycle.status, "orgao")}</StatusPill>
+            <StatusPill tone={collectionTone(collection.status)}>
+              {collectionLabel(collection.status)}
+            </StatusPill>
           </div>
           <div className="cycle-summary">
             <div>
@@ -4921,240 +5120,87 @@ function FocalCycleDetail({
               <span>prazo</span>
             </div>
             <div>
-              <strong>{kindLabel(cycle.objectKind)}</strong>
-              <span>tipo do objeto</span>
+              <strong>{collection.submittedAt || "Ainda não enviada"}</strong>
+              <span>último envio</span>
             </div>
             <div>
-              <strong>{otherUgs.length ? `+${otherUgs.length}` : "Só o seu"}</strong>
-              <span>outros órgãos na coleta</span>
+              <strong>{collection.responseKind === "indisponibilidade" ? "Informação indisponível" : "Envio de dados"}</strong>
+              <span>tipo de resposta</span>
             </div>
           </div>
           <div className="card-actions">
             <button type="button" className="secondary-button" onClick={() => setView("focal-dashboard")}>
               <Icon name="arrow" />
-              Voltar ao painel
+              Voltar às coletas
             </button>
           </div>
         </section>
 
         <section className="card">
-          <span className="eyebrow">Respostas da coleta</span>
-          <h3>Quem respondeu, quando e em que estado está</h3>
-          {orgCollections.map((collection) => {
-            const sent = collection.submissions.filter((item) => item.status !== "rascunho");
-            const collectionPeople = respondents.filter((person) =>
-              person.collectionIds.includes(collection.id),
-            );
-            const register = () => {
-              if (!name.trim() || !email.trim()) return;
-              onRegisterRespondent(name.trim(), email.trim(), collection.id);
-              setName("");
-              setEmail("");
-            };
-            return (
-              <div key={collection.id} className="collection-block">
-                <span className="link-chip">
-                  <Icon name="link" size={14} />
-                  {collectionLink(collection)}
-                </span>
-
-                {sent.length ? (
-                  <div className="collection-log">
-                    {/* §8.2: log de quem respondeu — nome, setor, data. */}
-                    {sent.map((sub) => (
-                      <small key={sub.id}>
-                        {sub.respondentName} ·{" "}
-                        {respondents.find((item) => item.id === sub.respondentId)?.role ?? "Respondente técnico"} ·{" "}
-                        {sub.submittedAt}
-                      </small>
-                    ))}
+          <span className="eyebrow">Conteúdo recebido</span>
+          <h3>Planilha, anexos e histórico</h3>
+          {wasSubmitted ? (
+            <CollectionBlock
+              collection={collection}
+              respondent={respondent}
+              requiredAttachments={cycle.requiredAttachments}
+            >
+              <>
+                {collection.fileName ? (
+                  <div className="card-actions compact">
+                    <button
+                      type="button"
+                      className="ghost-button"
+                      onClick={() => notify(`Download simulado: ${collection.fileName}`)}
+                    >
+                      <Icon name="download" size={14} />
+                      Abrir planilha
+                    </button>
+                    {collection.attachments.length ? (
+                      <button
+                        type="button"
+                        className="ghost-button"
+                        onClick={() => notify(`Download simulado: ${collection.attachments.length} anexo(s)`)}
+                      >
+                        <Icon name="file" size={14} />
+                        Baixar anexos
+                      </button>
+                    ) : null}
                   </div>
                 ) : null}
-
-                {sent.length ? (
-                  sent.map((submission) => (
-                    <SubmissionBlock
-                      key={submission.id}
-                      submission={submission}
-                      respondent={respondents.find((item) => item.id === submission.respondentId)}
-                      requiredAttachments={collection.requiredAttachments}
-                    >
-                      <>
-                        {submission.fileName ? (
-                          <div className="card-actions compact">
-                            {/* §8.3: acesso à planilha e aos anexos da submissão (simulado). */}
-                            <button
-                              type="button"
-                              className="ghost-button"
-                              onClick={() => notify(`Download simulado: ${submission.fileName}`)}
-                            >
-                              <Icon name="download" size={14} />
-                              Abrir planilha
-                            </button>
-                            {submission.attachments.length ? (
-                              <button
-                                type="button"
-                                className="ghost-button"
-                                onClick={() => notify(`Download simulado: ${submission.attachments.length} anexo(s)`)}
-                              >
-                                <Icon name="file" size={14} />
-                                Baixar anexos
-                              </button>
-                            ) : null}
-                          </div>
-                        ) : null}
-                        {submission.status === "aguardando-ponto-focal" ? (
-                          <FocalDecision
-                            negative={submission.isNegative}
-                            onForward={() => onValidate(collection.id, submission.id)}
-                            onReturn={(reason) => onReturn(collection.id, submission.id, reason)}
-                          />
-                        ) : null}
-                      </>
-                    </SubmissionBlock>
-                  ))
-                ) : (
-                  <div className="empty-state">
-                    <Icon name="clock" size={28} />
-                    <strong>Nenhuma resposta ainda</strong>
-                    <span>O link da coleta está no SEI — qualquer pessoa do órgão pode responder.</span>
-                  </div>
-                )}
-
-                {/* §8.2: adicionar respondente AQUI, dentro da coleta — o lugar natural. */}
-                <div className="collection-people">
-                  <span className="eyebrow">Quem pode responder por esta coleta</span>
-                  <div className="person-list">
-                    {collectionPeople.map((person) => (
-                      <div key={person.id} className="person-row">
-                        <div>
-                          <strong>{person.name}</strong>
-                          <small>
-                            {person.role || "Respondente técnico"} · {person.email}
-                          </small>
-                        </div>
-                        <div className="person-flags">
-                          <StatusPill tone={person.createdBySelf ? "warning" : "info"}>
-                            {person.createdBySelf ? "Auto-cadastro" : "Pré-cadastrado"}
-                          </StatusPill>
-                          <StatusPill tone={person.emailVerified ? "success" : "neutral"}>
-                            {person.emailVerified ? "E-mail verificado" : "Aguardando 1º acesso"}
-                          </StatusPill>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                  <div className="chip-editor">
-                    <input
-                      placeholder="Nome do respondente"
-                      value={name}
-                      onChange={(event) => setName(event.target.value)}
-                    />
-                    <input
-                      placeholder="E-mail institucional"
-                      value={email}
-                      onChange={(event) => setEmail(event.target.value)}
-                    />
-                    <button type="button" className="secondary-button" onClick={register}>
-                      <Icon name="users" size={16} />
-                      Adicionar respondente
-                    </button>
-                  </div>
-                  <p className="muted-text">
-                    Pré-cadastrar aqui adiciona a pessoa a esta coleta; quem chega pelo link se cadastra
-                    sozinho (auto-cadastro).
-                  </p>
-                </div>
-              </div>
-            );
-          })}
+                {collection.status === "aguardando-ponto-focal" ? (
+                  <FocalDecision
+                    negative={collection.responseKind === "indisponibilidade"}
+                    onForward={() => onValidate(collection.id)}
+                    onReturn={(reason) => onReturn(collection.id, reason)}
+                  />
+                ) : null}
+              </>
+            </CollectionBlock>
+          ) : (
+            <div className="empty-state compact-empty">
+              <Icon name="clock" size={28} />
+              <strong>Esta coleta ainda não foi enviada</strong>
+              <span>O responsável verá apenas a própria coleta quando entrar na plataforma.</span>
+            </div>
+          )}
         </section>
       </div>
     </div>
   );
 }
-
-function RespGeneralAccess({
-  onLogin,
-}: {
-  onLogin: (email: string, password: string) => boolean;
-}) {
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [error, setError] = useState("");
-
-  const submit = () => {
-    if (onLogin(email, password)) return;
-    setError("Cadastro não encontrado — confira o e-mail ou entre pelo link recebido no SEI.");
-  };
-
-  return (
-    <div className="workflow-page access-page">
-      <SectionHeader
-        eyebrow="Acesso do respondente"
-        title="Entrar nas minhas coletas"
-        description="Use seu cadastro para ver somente as coletas às quais você está vinculado."
-      />
-      <section className="card general-access-card">
-        <p className="muted-text general-access-note">
-          Acesso simulado localmente neste protótipo — nenhuma autenticação real é realizada.
-        </p>
-        <label htmlFor="respondent-general-email">
-          E-mail do respondente
-          <input
-            id="respondent-general-email"
-            type="email"
-            autoComplete="email"
-            value={email}
-            onChange={(event) => {
-              setEmail(event.target.value);
-              setError("");
-            }}
-          />
-        </label>
-        <label htmlFor="respondent-general-password">
-          Senha do respondente
-          <input
-            id="respondent-general-password"
-            type="password"
-            autoComplete="current-password"
-            value={password}
-            onChange={(event) => {
-              setPassword(event.target.value);
-              setError("");
-            }}
-          />
-        </label>
-        {error ? (
-          <p className="form-error" role="alert">
-            {error}
-          </p>
-        ) : null}
-        <button
-          type="button"
-          className="primary-button"
-          disabled={!email.trim() || !password.trim()}
-          onClick={submit}
-        >
-          Acessar minhas coletas
-        </button>
-      </section>
-    </div>
-  );
-}
-
 function RespAccess({
-  collection,
   cycle,
   ugList,
+  registrationOpenUgIds,
   onRegister,
   onLogin,
 }: {
-  collection: Collection;
-  cycle: CycleItem | undefined;
+  cycle: CycleItem;
   ugList: Ug[];
-  onRegister: (data: { name: string; email: string; phone: string; role: string; ugId: string }) => void;
-  onLogin: (email: string) => boolean;
+  registrationOpenUgIds: string[];
+  onRegister: (data: { name: string; email: string; phone: string; role: string; ugId: string; password: string }) => void;
+  onLogin: (email: string, password: string) => boolean;
 }) {
   const [step, setStep] = useState<1 | 2>(1);
   const [form, setForm] = useState({
@@ -5162,21 +5208,35 @@ function RespAccess({
     email: "",
     phone: "",
     role: "",
-    ugId: collection.ugId,
+    ugId: registrationOpenUgIds[0] ?? cycle.ugIds[0] ?? "",
   });
   const [password, setPassword] = useState("");
   const [loginEmail, setLoginEmail] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
   const [loginError, setLoginError] = useState(false);
+  const registrationNameRef = useRef<HTMLInputElement>(null);
+  const registrationPasswordRef = useRef<HTMLInputElement>(null);
+  const previousStepRef = useRef<1 | 2>(step);
 
-  const ug = ugList.find((item) => item.id === collection.ugId);
-  const mismatch = form.ugId !== collection.ugId;
-  const canContinue = form.name.trim() && form.email.trim() && form.role.trim();
+  useEffect(() => {
+    if (previousStepRef.current === step) return;
+    if (step === 2) registrationPasswordRef.current?.focus();
+    else registrationNameRef.current?.focus();
+    previousStepRef.current = step;
+  }, [step]);
+
+  const ug = ugList.find((item) => item.id === form.ugId);
+  const mismatch = !cycle.ugIds.includes(form.ugId);
+  const canContinue =
+    form.name.trim() &&
+    form.email.trim() &&
+    form.role.trim() &&
+    registrationOpenUgIds.includes(form.ugId);
 
   return (
     <div className="workflow-page wide-page">
       <SectionHeader
-        eyebrow="Acesso pelo link da coleta"
+        eyebrow="Acesso pelo link do ciclo"
         title="Identifique-se para responder"
         description="Toda resposta é enviada em nome do órgão e fica registrada com o nome de quem enviou."
       />
@@ -5185,19 +5245,30 @@ function RespAccess({
       <section className="card access-context">
         <Icon name="link" />
         <div>
-          <span>Você chegou pelo link desta coleta</span>
+          <span>Você chegou pelo link deste ciclo</span>
           <strong>
-            {collection.objectCode} · {collection.objectName}
+            {cycle.objectCode} · {cycle.objectName}
           </strong>
           <span>
-            {ug?.name ?? collection.ugId} · prazo {cycle?.deadline ?? "—"} · SEI {cycle?.seiNumber || "a informar"}
+            {ug?.name ?? form.ugId} · prazo {cycle.deadline} · SEI {cycle.seiNumber || "a informar"}
           </span>
         </div>
       </section>
 
       {/* §5: duas portas em pé de igualdade, claramente separadas. */}
       <div className="access-doors">
+        {registrationOpenUgIds.length > 0 ? (
         <section className="card access-door">
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (step === 1) {
+                if (canContinue) setStep(2);
+                return;
+              }
+              if (password.trim()) onRegister({ ...form, password });
+            }}
+          >
           <span className="eyebrow">Primeiro acesso</span>
           <h3>Criar cadastro</h3>
           <p className="muted-text">Nome, e-mail, telefone, cargo e órgão — com validação por e-mail e senha.</p>
@@ -5207,15 +5278,30 @@ function RespAccess({
             <div className="details-form">
               <label>
                 Nome completo
-                <input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} />
+                <input
+                  ref={registrationNameRef}
+                  autoComplete="name"
+                  value={form.name}
+                  onChange={(event) => setForm({ ...form, name: event.target.value })}
+                />
               </label>
               <label>
                 E-mail
-                <input value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} />
+                <input
+                  type="email"
+                  autoComplete="email"
+                  value={form.email}
+                  onChange={(event) => setForm({ ...form, email: event.target.value })}
+                />
               </label>
               <label>
                 Telefone
-                <input value={form.phone} onChange={(event) => setForm({ ...form, phone: event.target.value })} />
+                <input
+                  type="tel"
+                  autoComplete="tel"
+                  value={form.phone}
+                  onChange={(event) => setForm({ ...form, phone: event.target.value })}
+                />
               </label>
               <label>
                 Cargo / setor
@@ -5224,7 +5310,7 @@ function RespAccess({
               <label className="full-row">
                 Órgão
                 <select value={form.ugId} onChange={(event) => setForm({ ...form, ugId: event.target.value })}>
-                  {ugList.filter((item) => item.id !== "stc").map((item) => (
+                  {ugList.filter((item) => registrationOpenUgIds.includes(item.id)).map((item) => (
                     <option key={item.id} value={item.id}>
                       {item.acronym} — {item.name}
                     </option>
@@ -5239,7 +5325,7 @@ function RespAccess({
                 <div>
                   <strong>Órgão diferente do vínculo da coleta</strong>
                   <span>
-                    Este link pertence à {ug?.acronym ?? collection.ugId}. Confira seu vínculo — o
+                    Este ciclo não inclui {ug?.acronym ?? form.ugId}. Confira seu vínculo — o
                     cruzamento fica registrado para a STC.
                   </span>
                 </div>
@@ -5248,10 +5334,9 @@ function RespAccess({
 
             <div className="card-actions">
               <button
-                type="button"
+                type="submit"
                 className="primary-button ripple-button"
                 disabled={!canContinue}
-                onClick={() => setStep(2)}
               >
                 <Icon name="arrow" />
                 Continuar
@@ -5280,7 +5365,9 @@ function RespAccess({
               <label>
                 Criar senha
                 <input
+                  ref={registrationPasswordRef}
                   type="password"
+                  autoComplete="new-password"
                   value={password}
                   onChange={(event) => setPassword(event.target.value)}
                 />
@@ -5292,10 +5379,9 @@ function RespAccess({
                 Voltar aos dados
               </button>
               <button
-                type="button"
+                type="submit"
                 className="primary-button ripple-button"
                 disabled={!password.trim()}
-                onClick={() => onRegister(form)}
               >
                 <Icon name="check" />
                 Confirmar e-mail e acessar a coleta
@@ -5304,9 +5390,24 @@ function RespAccess({
           </>
         ) : null}
 
+          </form>
         </section>
+        ) : (
+          <section className="card access-door access-door-closed">
+            <span className="eyebrow">Primeiro acesso</span>
+            <h3>Cadastro encerrado</h3>
+            <p className="muted-text">Este ciclo foi finalizado e não aceita novas coletas. Contas já vinculadas ainda podem entrar para consultar o comprovante.</p>
+          </section>
+        )}
 
         <section className="card access-door">
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (!loginEmail.trim() || !loginPassword.trim()) return;
+              if (!onLogin(loginEmail, loginPassword)) setLoginError(true);
+            }}
+          >
           <span className="eyebrow">Já tenho cadastro</span>
           <h3>Entrar</h3>
           <p className="muted-text">Use o e-mail e a senha criados no primeiro acesso.</p>
@@ -5315,7 +5416,11 @@ function RespAccess({
               <label>
                 E-mail
                 <input
+                  type="email"
+                  autoComplete="email"
                   placeholder="ex.: joao.lima@seduc.ma.gov.br"
+                  aria-invalid={loginError || undefined}
+                  aria-describedby={loginError ? "respondent-login-error" : undefined}
                   value={loginEmail}
                   onChange={(event) => {
                     setLoginEmail(event.target.value);
@@ -5327,13 +5432,19 @@ function RespAccess({
                 Senha
                 <input
                   type="password"
+                  autoComplete="current-password"
+                  aria-invalid={loginError || undefined}
+                  aria-describedby={loginError ? "respondent-login-error" : undefined}
                   value={loginPassword}
-                  onChange={(event) => setLoginPassword(event.target.value)}
+                  onChange={(event) => {
+                    setLoginPassword(event.target.value);
+                    setLoginError(false);
+                  }}
                 />
               </label>
             </div>
             {loginError ? (
-              <div className="alert danger">
+              <div id="respondent-login-error" className="alert danger" role="alert">
                 <Icon name="x" />
                 <div>
                   <strong>Cadastro não encontrado</strong>
@@ -5343,18 +5454,16 @@ function RespAccess({
             ) : null}
             <div className="card-actions">
               <button
-                type="button"
+                type="submit"
                 className="primary-button ripple-button"
                 disabled={!loginEmail.trim() || !loginPassword.trim()}
-                onClick={() => {
-                  if (!onLogin(loginEmail)) setLoginError(true);
-                }}
               >
                 <Icon name="lock" />
                 Entrar
               </button>
             </div>
           </>
+          </form>
         </section>
       </div>
     </div>
@@ -5374,13 +5483,13 @@ function RespDashboard({
   ugList: Ug[];
   openCollection: (collectionId: string) => void;
 }) {
-  const myCollections = respondent.collectionIds
-    .map((id) => collections.find((item) => item.id === id))
-    .filter((item): item is Collection => Boolean(item));
+  const myCollections = collections.filter(
+    (item) => item.ownerType === "respondente" && item.ownerId === respondent.id,
+  );
 
-  const actionLabel = (status: SubmissionStatus) => {
+  const actionLabel = (status: CollectionStatus) => {
     if (status === "pendente" || status === "rascunho") return "Responder coleta";
-    if (status === "reaberto") return "Corrigir envio";
+    if (status === "em-correcao") return "Corrigir envio";
     return "Ver comprovante";
   };
 
@@ -5398,7 +5507,7 @@ function RespDashboard({
             <span className="eyebrow">Coletas disponíveis</span>
             <h3>Responder, corrigir ou consultar comprovante</h3>
           </div>
-          <StatusPill tone="info">Toda submissão é identificada</StatusPill>
+          <StatusPill tone="info">Toda coleta tem responsável identificado</StatusPill>
         </div>
 
         {!myCollections.length ? (
@@ -5414,53 +5523,52 @@ function RespDashboard({
         <div className="ug-cycle-list">
           {myCollections.map((collection) => {
             const cycle = cycles.find((item) => item.id === collection.cycleId);
-            const own = collection.submissions.find((item) => item.respondentId === respondent.id);
-            const status: SubmissionStatus = own?.status ?? "pendente";
+            const status = collection.status;
             const rowClass =
-              status === "reaberto" ? "correcao" : status === "aprovado" ? "finalizado" : "ativo";
+              status === "em-correcao" ? "correcao" : status === "aprovada" ? "finalizado" : "ativo";
             return (
               <article key={collection.id} className={`ug-cycle-row ${rowClass}`}>
                 <div className="ug-cycle-status">
-                  <StatusPill tone={submissionTone(status)}>{submissionLabel(status)}</StatusPill>
+                  <StatusPill tone={collectionTone(status)}>{collectionLabel(status)}</StatusPill>
                   <span>prazo {cycle?.deadline ?? "—"}</span>
                 </div>
                 <div className="ug-cycle-main">
                   <strong>
-                    {collection.objectCode} · {collection.objectName}
+                    {cycle?.objectCode} · {cycle?.objectName}
                   </strong>
                   <span>
                     {ugList.find((item) => item.id === collection.ugId)?.name ?? collection.ugId} ·{" "}
-                    {kindLabel(collection.kind)}
+                    {cycle ? kindLabel(cycle.objectKind) : "Objeto"}
                   </span>
-                  {status === "reaberto" && own ? (
-                    <p>{own.rejectionReason}</p>
+                  {status === "em-correcao" ? (
+                    <p>{collection.rejectionReason}</p>
                   ) : (
                     <p>
-                      {collection.kind === "fixo"
+                      {cycle?.objectKind === "fixo"
                         ? cycle?.spreadsheetStatus === "fixed-template-pending"
-                          ? `Modelo fixo ${collection.objectCode} pendente de vinculação`
+                          ? `Modelo fixo ${cycle.objectCode} pendente de vinculação`
                           : "Modelo fixo disponível para download"
                         : "Planilha gerada pela STC"}
-                      {collection.requiredAttachments.length
-                        ? ` · ${collection.requiredAttachments.length} anexos obrigatórios.`
+                      {cycle?.requiredAttachments.length
+                        ? ` · ${cycle.requiredAttachments.length} anexos obrigatórios.`
                         : "."}
                     </p>
                   )}
                 </div>
                 <div className="ug-cycle-meta">
-                  <span>{own?.fileName || "Nenhum arquivo enviado"}</span>
-                  <span>{own?.protocol ? `Protocolo ${own.protocol}` : "Sem comprovante ainda"}</span>
+                  <span>{collection.fileName || "Nenhum arquivo enviado"}</span>
+                  <span>{collection.protocol ? `Protocolo ${collection.protocol}` : "Sem comprovante ainda"}</span>
                 </div>
                 <button
                   type="button"
                   className={
-                    status === "pendente" || status === "rascunho" || status === "reaberto"
+                    status === "pendente" || status === "rascunho" || status === "em-correcao"
                       ? "primary-button ripple-button"
                       : "secondary-button"
                   }
                   onClick={() => openCollection(collection.id)}
                 >
-                  <Icon name={status === "reaberto" ? "refresh" : status === "pendente" || status === "rascunho" ? "send" : "eye"} />
+                  <Icon name={status === "em-correcao" ? "refresh" : status === "pendente" || status === "rascunho" ? "send" : "eye"} />
                   {actionLabel(status)}
                 </button>
               </article>
@@ -5499,7 +5607,6 @@ export function attachmentsMeetRequirement(sent: number, required: number): bool
 function RespCollection({
   collection,
   cycle,
-  submission,
   fieldDefs,
   requiresFocal,
   notify,
@@ -5512,7 +5619,6 @@ function RespCollection({
 }: {
   collection: Collection;
   cycle: CycleItem | undefined;
-  submission: Submission | undefined;
   fieldDefs: FieldDefinition[];
   requiresFocal: boolean;
   notify: (message: string) => void;
@@ -5523,14 +5629,15 @@ function RespCollection({
   onReportMissing: (reason: string) => void;
   setView: (view: View) => void;
 }) {
-  const correcting = submission?.status === "reaberto";
+  const response = collection;
+  const correcting = response.status === "em-correcao";
   // Enviada (fora rascunho/reaberto) = não editável: o wizard abre direto no comprovante (etapa 4).
-  const sent = Boolean(submission) && submission?.status !== "rascunho" && submission?.status !== "reaberto";
+  const sent = collectionWasSubmitted(response) && response.status !== "rascunho" && response.status !== "em-correcao";
   const readOnly = sent;
-  const hasReceipts = Boolean(submission?.receipts.length);
+  const hasReceipts = Boolean(response.receipts.length);
   const [step, setStep] = useState<1 | 2 | 3 | 4>(sent ? 4 : correcting ? 2 : 1);
-  const [fileName, setFileName] = useState(submission?.fileName ?? "");
-  const [attachments, setAttachments] = useState<string[]>(submission?.attachments ?? []);
+  const [fileName, setFileName] = useState(response.fileName);
+  const [attachments, setAttachments] = useState<string[]>(response.attachments);
   const [sheetOutOfModel, setSheetOutOfModel] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [negativeOpen, setNegativeOpen] = useState(false);
@@ -5540,9 +5647,9 @@ function RespCollection({
   const [downloaded, setDownloaded] = useState(false);
 
   const ug = ugList.find((item) => item.id === collection.ugId);
-  const required = collection.requiredAttachments;
+  const required = cycle?.requiredAttachments ?? [];
   const fixedTemplatePending =
-    collection.kind === "fixo" && cycle?.spreadsheetStatus === "fixed-template-pending";
+    cycle?.objectKind === "fixo" && cycle.spreadsheetStatus === "fixed-template-pending";
   // Correção 3: checagem de anexos por CONTAGEM — enviados ≥ exigidos. Nunca pelo título,
   // nunca pelo conteúdo; pode enviar mais que o exigido, nunca menos.
   const anexosOk = attachmentsMeetRequirement(attachments.length, required.length);
@@ -5551,8 +5658,8 @@ function RespCollection({
   const planilhaOk = !fixedTemplatePending && Boolean(fileName) && !sheetOutOfModel;
   const structuralOk = !fixedTemplatePending && planilhaOk && anexosOk;
   const missingCount = required.length - attachments.length;
-  const templateName = `${collection.objectCode}_planilha_${collection.kind === "fixo" ? "padrao" : "gerada"}.xlsx`;
-  const uploadName = `${collection.objectCode.toLowerCase()}_${collection.ugId}_${correcting ? "corrigida" : "preenchida"}.xlsx`;
+  const templateName = `${cycle?.objectCode ?? "coleta"}_planilha_${cycle?.objectKind === "fixo" ? "padrao" : "gerada"}.xlsx`;
+  const uploadName = `${(cycle?.objectCode ?? "coleta").toLowerCase()}_${collection.ugId}_${correcting ? "corrigida" : "preenchida"}.xlsx`;
 
   const addAttachment = () => {
     setAttachments([...attachments, sampleUploadNames[attachments.length % sampleUploadNames.length]]);
@@ -5568,17 +5675,17 @@ function RespCollection({
       <div className="card wizard-topbar">
         <div>
           <span className="eyebrow">
-            {collection.objectCode} · {ug?.acronym ?? collection.ugId} · {kindLabel(collection.kind)}
+            {cycle?.objectCode ?? "Coleta"} · {ug?.acronym ?? collection.ugId} · {cycle ? kindLabel(cycle.objectKind) : "Objeto"}
           </span>
-          <h2>{collection.objectName}</h2>
+          <h2>{cycle?.objectName ?? "Coleta individual"}</h2>
           <span className="wizard-deadline">
             prazo {cycle?.deadline ?? "—"}
             {cycle ? ` · ${deadlineContext(cycle.deadline)}` : ""} · SEI {cycle?.seiNumber || "a informar"}
           </span>
         </div>
         <div className="wizard-topbar-side">
-          <StatusPill tone={submissionTone(submission?.status ?? "pendente")}>
-            {submissionLabel(submission?.status ?? "pendente")}
+          <StatusPill tone={collectionTone(response.status)}>
+            {collectionLabel(response.status)}
           </StatusPill>
           <button type="button" className="secondary-button" onClick={() => setView("resp-dashboard")}>
             <Icon name="arrow" />
@@ -5593,6 +5700,9 @@ function RespCollection({
             key={label}
             type="button"
             className={`wizard-step ${state}${step === index + 1 ? " current" : ""}`}
+            aria-label={`Etapa ${index + 1}: ${label} — ${
+              state === "done" ? "concluída" : step === index + 1 ? "atual" : "pendente"
+            }`}
             aria-current={step === index + 1 ? "step" : undefined}
             onClick={() => setStep((index + 1) as 1 | 2 | 3 | 4)}
           >
@@ -5619,7 +5729,7 @@ function RespCollection({
               <article className="howto-card">
                 <span className="eyebrow">O que a STC está pedindo</span>
                 <p>
-                  As informações de <strong>{collection.objectName}</strong> do órgão{" "}
+                  As informações de <strong>{cycle?.objectName ?? "esta coleta"}</strong> do órgão{" "}
                   {ug?.name ?? collection.ugId}, preenchidas na planilha-padrão e enviadas com os
                   documentos anexos até {cycle?.deadline ?? "o prazo indicado"}.
                 </p>
@@ -5643,7 +5753,7 @@ function RespCollection({
                 >
                   <Icon name="download" size={16} />
                   {fixedTemplatePending
-                    ? `Modelo fixo ${collection.objectCode} pendente de vinculação`
+                    ? `Modelo fixo ${cycle?.objectCode ?? ""} pendente de vinculação`
                     : downloaded
                       ? "Planilha baixada (simulado)"
                       : "Baixar planilha-padrão"}
@@ -5656,8 +5766,15 @@ function RespCollection({
                   Cada coluna abaixo é uma coluna da planilha. Não mude os títulos nem a ordem — o
                   sistema confere a estrutura na hora do envio.
                 </p>
-                <div className="field-table-scroll">
+                <div
+                  className="field-table-scroll"
+                  role="region"
+                  aria-label="Estrutura das colunas da planilha"
+                  aria-describedby="field-table-scroll-hint"
+                  tabIndex={0}
+                >
                   <table className="field-table">
+                    <caption className="sr-only">Colunas exigidas na planilha-padrão</caption>
                     <thead>
                       <tr>
                         <th>Coluna</th>
@@ -5678,6 +5795,7 @@ function RespCollection({
                     </tbody>
                   </table>
                 </div>
+                <p id="field-table-scroll-hint" className="table-scroll-hint">Use as setas ou deslize horizontalmente para ver todas as colunas.</p>
               </article>
 
               <article className="howto-card">
@@ -5722,7 +5840,7 @@ function RespCollection({
         {step === 2 ? (
           <>
             {/* §7.2: quando a coleta voltou, a observação de correção é a informação mais importante. */}
-            {correcting && submission ? (
+            {correcting ? (
               <div className="correction-highlight">
                 <div className="correction-head">
                   <Icon name="refresh" />
@@ -5731,19 +5849,26 @@ function RespCollection({
                     <span>O pedido de correção, com autor e data:</span>
                   </div>
                 </div>
-                <ObservationThread observations={submission.observations} />
+                <ObservationThread observations={response.observations} />
               </div>
             ) : null}
 
-            {collection.kind === "fixo" ? (
+            {cycle?.objectKind === "fixo" ? (
               <div className="sheet-preview">
                 <span className="eyebrow">
                   {fixedTemplatePending
                     ? "Estrutura esperada do modelo fixo (arquivo pendente)"
                     : "Prévia da planilha-padrão"}
                 </span>
-                <div className="sheet-preview-scroll">
+                <div
+                  className="sheet-preview-scroll"
+                  role="region"
+                  aria-label="Prévia horizontal da planilha"
+                  aria-describedby="sheet-preview-scroll-hint"
+                  tabIndex={0}
+                >
                   <table>
+                    <caption className="sr-only">Prévia das colunas e formatos da planilha</caption>
                     <thead>
                       <tr>
                         {fieldDefs.map((field) => (
@@ -5760,6 +5885,7 @@ function RespCollection({
                     </tbody>
                   </table>
                 </div>
+                <p id="sheet-preview-scroll-hint" className="table-scroll-hint">Use as setas ou deslize horizontalmente para consultar a prévia completa.</p>
               </div>
             ) : null}
 
@@ -5769,7 +5895,7 @@ function RespCollection({
                 <div>
                   <strong>Envio temporariamente indisponível</strong>
                   <span>
-                    O modelo fixo {collection.objectCode} ainda não foi vinculado. Não é possível subir ou enviar respostas.
+                    O modelo fixo {cycle?.objectCode} ainda não foi vinculado. Não é possível subir nem enviar planilha; a resposta negativa continua disponível.
                   </span>
                 </div>
               </div>
@@ -5778,15 +5904,15 @@ function RespCollection({
         <div className="model-upload-grid">
           <article className="model-preview">
             <span className="eyebrow">
-              {collection.kind === "fixo"
+              {cycle?.objectKind === "fixo"
                 ? "Modelo fixo do Tesauro/Registro"
                 : "Planilha-padrão gerada pela STC"}
             </span>
-            <h4>{fixedTemplatePending ? `${collection.objectCode} · arquivo pendente` : templateName}</h4>
+            <h4>{fixedTemplatePending ? `${cycle?.objectCode} · arquivo pendente` : templateName}</h4>
             <p>
               {fixedTemplatePending
                 ? "O código do modelo está registrado, mas o arquivo real ainda precisa ser vinculado pela STC."
-                : collection.kind === "fixo"
+                : cycle?.objectKind === "fixo"
                   ? "Modelo recorrente do objeto, com os campos e regras mínimas de preenchimento."
                 : "Gerada a partir dos campos que a STC selecionou na criação da coleta."}
             </p>
@@ -5803,7 +5929,7 @@ function RespCollection({
             >
               <Icon name="download" size={16} />
               {fixedTemplatePending
-                ? `Modelo fixo ${collection.objectCode} pendente de vinculação`
+                ? `Modelo fixo ${cycle?.objectCode} pendente de vinculação`
                 : downloaded
                   ? "Modelo baixado (simulado)"
                   : "Baixar planilha-padrão"}
@@ -6033,9 +6159,9 @@ function RespCollection({
         {step === 4 ? (
           <>
             {/* §7.4: o comprovante — e o que acontece agora. */}
-            {hasReceipts && submission ? (
+            {hasReceipts ? (
               <>
-                {submission.status === "aguardando-ponto-focal" ? (
+                {response.status === "aguardando-ponto-focal" ? (
                   <div className="alert">
                     <Icon name="clock" />
                     <div>
@@ -6044,7 +6170,7 @@ function RespCollection({
                     </div>
                   </div>
                 ) : null}
-                {submission.status === "enviado" ? (
+                {response.status === "aguardando-stc" ? (
                   <div className="alert">
                     <Icon name="clipboard" />
                     <div>
@@ -6053,7 +6179,7 @@ function RespCollection({
                     </div>
                   </div>
                 ) : null}
-                {submission.status === "aprovado" ? (
+                {response.status === "aprovada" ? (
                   <div className="quality-strip success">
                     <Icon name="check" />
                     <div>
@@ -6062,7 +6188,7 @@ function RespCollection({
                     </div>
                   </div>
                 ) : null}
-                {submission.status === "resposta-negativa" ? (
+                {response.responseKind === "indisponibilidade" ? (
                   <div className="alert">
                     <Icon name="clock" />
                     <div>
@@ -6074,7 +6200,7 @@ function RespCollection({
                   </div>
                 ) : null}
 
-                <ReceiptTimeline submission={submission} seiNumber={cycle?.seiNumber ?? ""} compact />
+                <ReceiptTimeline collection={response} seiNumber={cycle?.seiNumber ?? ""} compact />
 
                 <div className="alert">
                   <Icon name="arrow" />
@@ -6090,7 +6216,7 @@ function RespCollection({
                   </div>
                 </div>
 
-                <ObservationThread observations={submission.observations} />
+                <ObservationThread observations={response.observations} />
 
                 <div className="card-actions">
                   <button
@@ -6143,19 +6269,15 @@ function RespCollection({
         {!sent && (step === 2 || step === 3) ? (
           <>
             <div className="wizard-actions">
+              <button
+                type="button"
+                className="ghost-button"
+                onClick={() => setNegativeOpen(true)}
+              >
+                <Icon name="x" size={16} />
+                Não tenho esta informação
+              </button>
               {!correcting ? (
-                <>
-                  <button
-                    type="button"
-                    className="ghost-button"
-                    disabled={fixedTemplatePending}
-                    onClick={() => {
-                      if (!fixedTemplatePending) setNegativeOpen(true);
-                    }}
-                  >
-                    <Icon name="x" size={16} />
-                    Não tenho esta informação
-                  </button>
                   <button
                     type="button"
                     className="secondary-button"
@@ -6165,7 +6287,6 @@ function RespCollection({
                     <Icon name="edit" size={16} />
                     Salvar rascunho
                   </button>
-                </>
               ) : null}
               <button
                 type="button"
@@ -6180,7 +6301,7 @@ function RespCollection({
             {!structuralOk ? (
               <p className="wizard-block-hint">
                 {fixedTemplatePending
-                  ? `Aguarde a STC vincular o modelo fixo ${collection.objectCode} antes de responder. `
+                  ? `Aguarde a STC vincular o modelo fixo ${cycle?.objectCode ?? ""} antes de responder. `
                   : !fileName
                   ? "Suba a planilha preenchida na etapa 2. "
                   : !planilhaOk
@@ -6215,6 +6336,7 @@ export default function App() {
   const [objectAttachmentsRegistry, setObjectAttachmentsRegistry] = useState<Record<string, string[]>>({});
   const [objectFieldsRegistry, setObjectFieldsRegistry] = useState<Record<string, FieldDefinition[]>>({});
   const [currentRespondentId, setCurrentRespondentId] = useState("");
+  const [currentFocalUgId, setCurrentFocalUgId] = useState("");
   // §2.1: funil invertido — o TIPO é escolhido antes do objeto; a tela nasce sem objeto selecionado.
   const [createKind, setCreateKind] = useState<ObjectKind | null>(null);
   const [objectId, setObjectId] = useState("");
@@ -6224,9 +6346,11 @@ export default function App() {
   const [activeCycleId, setActiveCycleId] = useState("ciclo-100");
   const [editingCycleId, setEditingCycleId] = useState("");
   const [reviewCycleId, setReviewCycleId] = useState("");
-  const [activeCollectionId, setActiveCollectionId] = useState("col-100-seduc");
-  const [linkCollectionId, setLinkCollectionId] = useState("col-100-seduc");
-  const [validationCollectionId, setValidationCollectionId] = useState("col-100-seduc");
+  const [activeCollectionId, setActiveCollectionId] = useState("collection-ciclo-100-resp-joao");
+  const [linkCycleId, setLinkCycleId] = useState("ciclo-100");
+  const [validationCollectionId, setValidationCollectionId] = useState("collection-ciclo-100-resp-joao");
+  const [expandedFocalCycleId, setExpandedFocalCycleId] = useState("");
+  const [focalSignals, setFocalSignals] = useState<FocalSignal[]>([]);
   const [profileOpen, setProfileOpen] = useState(false);
 
   const allObjects = useMemo(
@@ -6238,6 +6362,8 @@ export default function App() {
   );
   const fieldsFor = (object: TransparencyObject): FieldDefinition[] =>
     objectFieldsRegistry[object.code] ?? [...object.fields];
+  const requiredAttachmentsOf = (object: TransparencyObject): string[] =>
+    requiredAttachmentsForObject(object, objectAttachmentsRegistry[object.code] ?? []);
   const fieldCatalogForCycles = useMemo(() => {
     const fieldsById = new Map<string, FieldDefinition>();
     canonicalFields.forEach((field) => fieldsById.set(field.id, { ...field }));
@@ -6271,10 +6397,10 @@ export default function App() {
   };
   const activeCycle = cycles.find((cycle) => cycle.id === activeCycleId) ?? cycles[0];
   const editingCycle = cycles.find((cycle) => cycle.id === editingCycleId) ?? null;
-  const activeCollection =
-    collections.find((item) => item.id === activeCollectionId) ?? collections[0];
-  const linkCollection = collections.find((item) => item.id === linkCollectionId) ?? collections[0];
+  const activeCollection = collections.find((item) => item.id === activeCollectionId) ?? null;
+  const linkCycle = cycles.find((item) => item.id === linkCycleId) ?? null;
   const currentRespondent = respondents.find((item) => item.id === currentRespondentId) ?? null;
+  const currentFocalUg = ugList.find((item) => item.id === currentFocalUgId) ?? null;
 
   useEffect(() => {
     window.scrollTo({ top: 0, left: 0, behavior: "auto" });
@@ -6290,20 +6416,14 @@ export default function App() {
     return () => window.clearTimeout(timer);
   }, [toast]);
 
-  const setRoleAndReset = (nextRole: Role) => {
-    setRole(nextRole);
-    setProfileOpen(false);
-    if (isStcRole(nextRole)) setView("stc-home");
-    if (nextRole === "ponto-focal") setView("focal-dashboard");
-    if (nextRole === "respondente")
-      setView(currentRespondentId ? "resp-dashboard" : "resp-general-access");
-  };
-
-  const applySubmissions = (collectionId: string, mutate: (subs: Submission[]) => Submission[]) => {
+  const updateIndividualCollection = (
+    collectionId: string,
+    mutate: (collection: Collection) => Collection,
+  ) => {
     const target = collections.find((item) => item.id === collectionId);
     if (!target) return;
     const nextCollections = collections.map((item) =>
-      item.id === collectionId ? { ...item, submissions: mutate(item.submissions) } : item,
+      item.id === collectionId ? mutate(item) : item,
     );
     setCollections(nextCollections);
     setCycles(
@@ -6316,38 +6436,14 @@ export default function App() {
   };
 
   const nextProtocol = () => {
-    const count = collections.flatMap((item) => item.submissions).filter((item) => item.protocol).length;
+    const count = collections.filter((item) => item.protocol).length;
     return `AG-2026-${String(29 + count).padStart(5, "0")}`;
   };
 
-  const upsertOwnSubmission = (
-    collectionId: string,
-    build: (previous: Submission | undefined) => Submission,
-  ) => {
-    applySubmissions(collectionId, (submissions) => {
-      const previous = submissions.find((item) => item.respondentId === currentRespondentId);
-      return previous
-        ? submissions.map((item) => (item === previous ? build(previous) : item))
-        : [...submissions, build(undefined)];
-    });
-  };
-
-  const ownSubmissionBase = (collectionId: string, previous: Submission | undefined) => ({
-    id: previous?.id ?? `sub-${collectionId}-${currentRespondentId}`,
-    collectionId,
-    respondentId: currentRespondentId,
-    respondentName: currentRespondent?.name ?? "",
-    rejectionReason: "",
-    isNegative: false,
-    observations: previous?.observations ?? [],
-    receipts: previous?.receipts ?? [],
-  });
-
-  const saveDraftSubmission = (collectionId: string, fileName: string, attachments: string[]) => {
-    upsertOwnSubmission(collectionId, (previous) => ({
-      ...ownSubmissionBase(collectionId, previous),
+  const saveCollectionDraft = (collectionId: string, fileName: string, attachments: string[]) => {
+    updateIndividualCollection(collectionId, (collection) => ({
+      ...collection,
       status: "rascunho",
-      protocol: previous?.protocol ?? "",
       fileName,
       attachments,
       submittedAt: "",
@@ -6357,39 +6453,43 @@ export default function App() {
   const cycleOfCollection = (collectionId: string) =>
     cycles.find((item) => item.id === collections.find((col) => col.id === collectionId)?.cycleId);
 
-  const sendSubmission = (collectionId: string, fileName: string, attachments: string[]) => {
+  const sendCollection = (collectionId: string, fileName: string, attachments: string[]) => {
     const cycle = cycleOfCollection(collectionId);
-    upsertOwnSubmission(collectionId, (previous) => {
-      // Correção 1: o reenvio é o restart do fluxo — sai em nome do órgão e passa pelo ponto
-      // focal DE NOVO quando o toggle está ligado. `resending` só muda o texto, nunca o status.
-      const resending = previous?.status === "reaberto";
-      const protocol = previous?.protocol || nextProtocol();
+    updateIndividualCollection(collectionId, (collection) => {
+      const resending = collection.status === "em-correcao";
+      const protocol = collection.protocol || nextProtocol();
       const summary = resending
         ? "Correção reenviada pela plataforma."
         : "Planilha e anexos enviados pela plataforma.";
       return {
-        ...ownSubmissionBase(collectionId, previous),
+        ...collection,
+        responseKind: "dados",
+        rejectionReason: "",
         receipts: [
-          ...(previous?.receipts ?? []),
+          ...collection.receipts,
           createReceipt(
             "envio",
             protocol,
-            currentRespondent?.name ?? "",
-            today,
-            previous?.receipts.length ?? 0,
+            collection.ownerName,
+            currentDateLabel(),
+            collection.receipts.length,
             summary,
           ),
         ],
-        status: statusAfterRespondentSend(Boolean(cycle?.requiresFocalPointValidation), false),
+        status: statusAfterCollectionSend(
+          collection.ownerType,
+          Boolean(cycle?.requiresFocalPointValidation),
+          false,
+        ),
         protocol,
         fileName,
         attachments,
-        submittedAt: today,
+        submittedAt: currentDateLabel(),
         observations: [
-          ...(previous?.observations ?? []),
+          ...collection.observations,
           {
-            author: currentRespondent?.name ?? "",
-            date: today,
+            author: collection.ownerName,
+            date: currentDateLabel(),
             text: summary,
           },
         ],
@@ -6397,77 +6497,82 @@ export default function App() {
     });
   };
 
-  const sendNegativeSubmission = (collectionId: string, reason: string) => {
+  const sendUnavailableCollection = (collectionId: string, reason: string) => {
     const cycle = cycleOfCollection(collectionId);
-    upsertOwnSubmission(collectionId, (previous) => {
-      const protocol = previous?.protocol || nextProtocol();
+    updateIndividualCollection(collectionId, (collection) => {
+      const protocol = collection.protocol || nextProtocol();
       return {
-        ...ownSubmissionBase(collectionId, previous),
+        ...collection,
+        rejectionReason: "",
         receipts: [
-          ...(previous?.receipts ?? []),
+          ...collection.receipts,
           createReceipt(
             "envio",
             protocol,
-            currentRespondent?.name ?? "",
-            today,
-            previous?.receipts.length ?? 0,
-            `Resposta negativa registrada: ${reason}`,
+            collection.ownerName,
+            currentDateLabel(),
+            collection.receipts.length,
+            `Indisponibilidade de informação registrada: ${reason}`,
           ),
         ],
-        // Correção 2: isNegative é a MARCA da submissão; o status diz onde ela está no fluxo —
-        // a afirmação institucional "não temos esta informação" também respeita o gate do focal.
-        status: statusAfterRespondentSend(Boolean(cycle?.requiresFocalPointValidation), true),
+        status: statusAfterCollectionSend(
+          collection.ownerType,
+          Boolean(cycle?.requiresFocalPointValidation),
+          true,
+        ),
+        responseKind: "indisponibilidade",
         protocol,
         fileName: "",
         attachments: [],
-        submittedAt: today,
-        isNegative: true,
+        submittedAt: currentDateLabel(),
         observations: [
-          ...(previous?.observations ?? []),
-          { author: currentRespondent?.name ?? "", date: today, text: reason },
+          ...collection.observations,
+          { author: collection.ownerName, date: currentDateLabel(), text: reason },
         ],
       };
     });
   };
 
-  const focalValidateSubmission = (collectionId: string, submissionId: string) => {
-    applySubmissions(collectionId, (submissions) =>
-      submissions.map((item) =>
-        item.id === submissionId
-          ? {
-              ...item,
-              // Correção 2: o encaminhamento respeita a marca — a negativa segue como estado próprio.
-              status: statusAfterFocal(item.isNegative),
-              observations: [
-                ...item.observations,
-                {
-                  author: `${focalUser.name} · ponto focal`,
-                  date: today,
-                  text: "Validado como resposta do órgão e encaminhado à STC.",
-                },
-              ],
-            }
-          : item,
-      ),
-    );
+  const focalValidateCollection = (collectionId: string) => {
+    const target = collections.find((collection) => collection.id === collectionId);
+    if (
+      !currentFocalUg ||
+      !target ||
+      target.ugId !== currentFocalUg.id ||
+      target.status !== "aguardando-ponto-focal"
+    ) return;
+    updateIndividualCollection(collectionId, (collection) => ({
+      ...collection,
+      status: statusAfterFocal(collection.responseKind === "indisponibilidade"),
+      observations: [
+        ...collection.observations,
+        {
+          author: `${currentFocalUg.focalName} · ponto focal`,
+          date: currentDateLabel(),
+          text: "Validado como resposta do órgão e encaminhado à STC.",
+        },
+      ],
+    }));
   };
 
-  const focalReturnSubmission = (collectionId: string, submissionId: string, reason: string) => {
-    applySubmissions(collectionId, (submissions) =>
-      submissions.map((item) =>
-        item.id === submissionId
-          ? {
-              ...item,
-              status: "reaberto",
-              rejectionReason: reason,
-              observations: [
-                ...item.observations,
-                { author: `${focalUser.name} · ponto focal`, date: today, text: reason },
-              ],
-            }
-          : item,
-      ),
-    );
+  const focalReturnCollection = (collectionId: string, reason: string) => {
+    const target = collections.find((collection) => collection.id === collectionId);
+    if (
+      !currentFocalUg ||
+      !target ||
+      target.ugId !== currentFocalUg.id ||
+      target.status !== "aguardando-ponto-focal" ||
+      !reason.trim()
+    ) return;
+    updateIndividualCollection(collectionId, (collection) => ({
+      ...collection,
+      status: "em-correcao",
+      rejectionReason: reason,
+      observations: [
+        ...collection.observations,
+        { author: `${currentFocalUg.focalName} · ponto focal`, date: currentDateLabel(), text: reason },
+      ],
+    }));
   };
 
   // TODO(P-023): a justificativa não destrava o envio — pendência a levar à STC.
@@ -6479,7 +6584,7 @@ export default function App() {
               ...item,
               attachmentJustifications: [
                 ...item.attachmentJustifications,
-                { author: currentRespondent?.name ?? "", date: today, text: reason },
+                { author: item.ownerName, date: currentDateLabel(), text: reason },
               ],
             }
           : item,
@@ -6487,15 +6592,12 @@ export default function App() {
     );
   };
 
-  const decideSubmission = (
+  const decideCollection = (
     collectionId: string,
-    submissionId: string,
     decision: "aprovar" | "rejeitar",
     reason: string,
   ) => {
-    applySubmissions(collectionId, (submissions) =>
-      submissions.map((item) => {
-        if (item.id !== submissionId) return item;
+    updateIndividualCollection(collectionId, (item) => {
         if (decision === "rejeitar") {
           return {
             ...item,
@@ -6505,17 +6607,17 @@ export default function App() {
                 "rejeicao",
                 item.protocol,
                 "Equipe STC",
-                today,
+                currentDateLabel(),
                 item.receipts.length,
                 reason || "Correção solicitada pela STC.",
               ),
             ],
-            status: "reaberto",
+            status: "em-correcao",
             rejectionReason: reason,
-            observations: [...item.observations, { author: "Equipe STC", date: today, text: reason }],
+            observations: [...item.observations, { author: "Equipe STC", date: currentDateLabel(), text: reason }],
           };
         }
-        const closingSummary = item.isNegative
+        const closingSummary = item.responseKind === "indisponibilidade"
           ? "Ciência registrada: o órgão declarou não deter a informação."
           : "Resposta aprovada. Coleta fechada.";
         return {
@@ -6526,24 +6628,23 @@ export default function App() {
               "fechamento",
               item.protocol,
               "Equipe STC",
-              today,
+              currentDateLabel(),
               item.receipts.length,
               closingSummary,
             ),
           ],
-          status: "aprovado",
+          status: "aprovada",
           rejectionReason: "",
           observations: [
             ...item.observations,
             {
               author: "Equipe STC",
-              date: today,
+              date: currentDateLabel(),
               text: closingSummary,
             },
           ],
         };
-      }),
-    );
+      });
   };
 
   const submitCycleForReview = () => {
@@ -6555,6 +6656,7 @@ export default function App() {
       !selectedUgs.length ||
       !selectedMetadataIds.length ||
       !draft.title.trim() ||
+      !isValidIsoDate(draft.deadline) ||
       !draft.notificationChannel.trim()
     )
       return;
@@ -6591,7 +6693,7 @@ export default function App() {
                 metadataLabels: selectedFields.map((field) => field.label),
                 spreadsheetStatus: "pending-approval",
                 creationStatus: "aguardando-analise",
-                lastUpdatedAt: today,
+                lastUpdatedAt: currentDateLabel(),
                 lastUpdatedBy: "Analista STC",
                 reviewHistory: [
                   ...cycle.reviewHistory,
@@ -6599,7 +6701,7 @@ export default function App() {
                     id: `${cycle.id}-analista-${cycle.reviewHistory.length + 1}`,
                     type: wasReturned ? "reenviado" : "alterado",
                     author: "Analista STC",
-                    date: today,
+                    date: currentDateLabel(),
                     message: wasReturned
                       ? "Ajustes concluídos e ciclo reenviado para análise."
                       : "Configuração atualizada enquanto aguardava análise.",
@@ -6623,28 +6725,28 @@ export default function App() {
       objectCode,
       objectName,
       objectKind: draft.kind,
-      createdAt: today,
+      createdAt: currentDateLabel(),
       createdAtIso: new Date().toISOString(),
       deadline: draft.deadline,
-      status: "ativo",
+      status: "em-andamento",
       seiNumber: draft.seiNumber,
+      linkToken: "",
       ugIds: [...selectedUgs],
       metadataLabels: selectedFields.map((field) => field.label),
       metadataIds: selectedFields.map((field) => field.id),
-      collectionIds: [],
       requiresFocalPointValidation: draft.requiresFocalPointValidation,
       requiredAttachments,
       creationStatus: "aguardando-analise",
       creationObservations: draft.observations,
       notificationChannel: draft.notificationChannel.trim(),
-      lastUpdatedAt: today,
+      lastUpdatedAt: currentDateLabel(),
       lastUpdatedBy: "Analista STC",
       reviewHistory: [
         {
           id: `${cycleId}-enviado-1`,
           type: "enviado",
           author: "Analista STC",
-          date: today,
+          date: currentDateLabel(),
           message: "Ciclo enviado para análise da criação.",
           changes: [],
         },
@@ -6703,6 +6805,7 @@ export default function App() {
       !cycle ||
       (reviewDraft.objectKind === "fixo" && !object) ||
       (reviewDraft.objectKind === "variavel" && !reviewDraft.objectName.trim()) ||
+      !isValidIsoDate(reviewDraft.deadline) ||
       cycle.creationStatus === "aprovado"
     )
       return;
@@ -6724,7 +6827,7 @@ export default function App() {
       id: `${cycle.id}-especialista-${cycle.reviewHistory.length + 1}`,
       type: action === "ajustes" ? "ajustes-solicitados" : action === "aprovar" ? "aprovado" : "alterado",
       author: "Especialista STC",
-      date: today,
+      date: currentDateLabel(),
       message:
         action === "ajustes"
           ? message
@@ -6745,33 +6848,16 @@ export default function App() {
           : cycle.spreadsheetStatus,
       creationStatus:
         action === "ajustes" ? "ajustes-solicitados" : action === "aprovar" ? "aprovado" : cycle.creationStatus,
-      lastUpdatedAt: today,
+      lastUpdatedAt: currentDateLabel(),
       lastUpdatedBy: "Especialista STC",
       reviewHistory: [...cycle.reviewHistory, event],
     };
 
     if (action === "aprovar") {
-      const cycleNumber = cycle.id.replace("ciclo-", "");
-      const newCollections: Collection[] = normalizedDraft.ugIds
-        .map((ugId) => ({
-          id: `col-${cycleNumber}-${ugId}`,
-          cycleId: cycle.id,
-          objectCode: normalizedDraft.objectCode,
-          objectName: normalizedDraft.objectName,
-          kind: normalizedDraft.objectKind,
-          ugId,
-          linkToken: `agz-${cycleNumber}-${ugId}`,
-          requiredAttachments: [...normalizedDraft.requiredAttachments],
-          attachmentJustifications: [],
-          submissions: [],
-        }))
-        .filter((collection) => !collections.some((item) => item.id === collection.id));
-      reviewedCycle.collectionIds = newCollections.map((collection) => collection.id);
-      reviewedCycle.status = "ativo";
-      setCollections([...collections, ...newCollections]);
-      if (newCollections[0]) setLinkCollectionId(newCollections[0].id);
+      reviewedCycle.linkToken = cycle.linkToken || `agz-${cycle.id}`;
+      reviewedCycle.status = "em-andamento";
       setActiveCycleId(cycle.id);
-      setToast("Ciclo aprovado e enviado às UGs");
+      setToast("Ciclo aprovado; link único liberado para as UGs");
     } else if (action === "ajustes") {
       setToast("Ajustes solicitados ao analista");
     } else {
@@ -6803,7 +6889,7 @@ export default function App() {
     setSelectedUgs([]);
     setSelectedMetadataIds(requiredFieldIdsForObject(nextObject, availableFields));
     setDraft({
-      ...draftForObject(nextObject),
+      ...draftForObject(nextObject, objectAttachmentsRegistry[nextObject.code] ?? []),
       seiNumber: draft.seiNumber,
     });
   };
@@ -6816,9 +6902,11 @@ export default function App() {
   };
 
   // §1.4: o link (hash) é o que a STC cola no SEI — copiar com confirmação visível.
-  const copyCollectionLink = async (collection: Collection) => {
+  const copyCycleLink = async (cycle: CycleItem) => {
+    const link = cycleLink(cycle);
+    if (!link) return;
     try {
-      await navigator.clipboard.writeText(`https://${collectionLink(collection)}`);
+      await navigator.clipboard.writeText(`https://${link}`);
       setToast("Link copiado");
     } catch {
       setToast("Não foi possível copiar — selecione o link exibido");
@@ -6894,6 +6982,17 @@ export default function App() {
       };
       setObjectAttachmentsRegistry((current) => migrateRegistryKey(current));
       setObjectFieldsRegistry((current) => migrateRegistryKey(current));
+      setCycles((current) =>
+        current.map((cycle) =>
+          cycle.creationStatus !== "aprovado" && cycle.objectCode === currentObject.code
+            ? {
+                ...cycle,
+                objectCode: normalizedPatch.code,
+                objectName: titleCase(normalizedPatch.name),
+              }
+            : cycle,
+        ),
+      );
     }
 
     setToast("Objeto do registro atualizado");
@@ -6957,6 +7056,27 @@ export default function App() {
     return true;
   };
 
+  const normalizeAccountEmail = (email: string) => email.trim().toLowerCase();
+  const stcAccessEmails = ["analista@stc.ma.gov.br", "especialista@stc.ma.gov.br"];
+  const emailReservedForRespondent = (email: string): boolean => {
+    const normalizedEmail = normalizeAccountEmail(email);
+    return (
+      stcAccessEmails.includes(normalizedEmail) ||
+      ugList.some((item) => normalizeAccountEmail(item.focalEmail) === normalizedEmail)
+    );
+  };
+  const focalEmailUnavailable = (email: string, excludedUgId = ""): boolean => {
+    const normalizedEmail = normalizeAccountEmail(email);
+    if (!normalizedEmail || stcAccessEmails.includes(normalizedEmail)) return true;
+    return (
+      ugList.some(
+        (item) =>
+          item.id !== excludedUgId && normalizeAccountEmail(item.focalEmail) === normalizedEmail,
+      ) ||
+      respondents.some((item) => normalizeAccountEmail(item.email) === normalizedEmail)
+    );
+  };
+
   const createUg = (data: { acronym: string; name: string; esfera: string; focalName: string; focalEmail: string }): boolean => {
     const acronym = data.acronym.trim().toLocaleUpperCase("pt-BR");
     const id = acronym
@@ -6975,6 +7095,10 @@ export default function App() {
           ? "Sigla ou identificador já cadastrado para outra UG"
           : "Informe uma sigla válida para a UG",
       );
+      return false;
+    }
+    if (focalEmailUnavailable(data.focalEmail)) {
+      setToast("E-mail já vinculado a outra UG ou perfil de acesso");
       return false;
     }
     setUgList((current) => [
@@ -6998,6 +7122,8 @@ export default function App() {
     const currentUg = ugList.find((item) => item.id === id);
     if (!currentUg) return false;
     const acronym = (patch.acronym ?? currentUg.acronym).trim().toLocaleUpperCase("pt-BR");
+    const focalEmail = patch.focalEmail?.trim() || currentUg.focalEmail;
+    const focalName = patch.focalName?.trim() || currentUg.focalName;
     const duplicateAcronym = ugList.some(
       (item) =>
         item.id !== id &&
@@ -7005,6 +7131,10 @@ export default function App() {
     );
     if (!acronym || duplicateAcronym) {
       setToast(duplicateAcronym ? "Sigla já cadastrada para outra UG" : "Informe a sigla da UG");
+      return false;
+    }
+    if (focalEmailUnavailable(focalEmail, id)) {
+      setToast("E-mail já vinculado a outra UG ou perfil de acesso");
       return false;
     }
     setUgList((current) =>
@@ -7017,35 +7147,73 @@ export default function App() {
               acronym,
               name: patch.name?.trim() || item.name,
               esfera: patch.esfera?.trim() || item.esfera,
-              focalName: patch.focalName?.trim() || item.focalName,
-              focalEmail: patch.focalEmail?.trim() || item.focalEmail,
+              focalName,
+              focalEmail,
             }
           : item,
       ),
     );
+    if (focalName !== currentUg.focalName) {
+      setCollections((current) =>
+        current.map((collection) =>
+          collection.ugId === id && collection.ownerType === "ponto-focal"
+            ? { ...collection, ownerName: focalName }
+            : collection,
+        ),
+      );
+    }
     setToast("Cadastro da UG atualizado");
     return true;
   };
 
-  const openCollectionLink = (collectionId: string) => {
-    setLinkCollectionId(collectionId);
+  const openCycleLink = (cycleId: string) => {
+    const cycle = cycles.find((item) => item.id === cycleId);
+    if (!cycle || !cycleLink(cycle)) return;
+    setLinkCycleId(cycleId);
     setRole("respondente");
+    setCurrentFocalUgId("");
+    setExpandedFocalCycleId("");
     setProfileOpen(false);
     if (!currentRespondent) {
       setView("resp-access");
       return;
     }
-    if (!currentRespondent.collectionIds.includes(collectionId)) {
-      setRespondents(
-        respondents.map((item) =>
-          item.id === currentRespondent.id
-            ? { ...item, collectionIds: [...item.collectionIds, collectionId] }
-            : item,
-        ),
-      );
+    if (!cycle.ugIds.includes(currentRespondent.ugId)) {
+      setToast("Seu órgão não faz parte deste ciclo");
+      setView("resp-dashboard");
+      return;
     }
-    setActiveCollectionId(collectionId);
+    const existingCollection = collections.find(
+      (item) =>
+        item.cycleId === cycle.id &&
+        item.ownerType === "respondente" &&
+        item.ownerId === currentRespondent.id,
+    );
+    if (!existingCollection && !cycleAcceptsNewCollections(cycle, collections, currentRespondent.ugId)) {
+      setToast("Este ciclo foi finalizado e não aceita novas coletas");
+      setView("resp-dashboard");
+      return;
+    }
+    const ensured = ensureIndividualCollection(collections, cycle, {
+      id: currentRespondent.id,
+      type: "respondente",
+      name: currentRespondent.name,
+      ugId: currentRespondent.ugId,
+    });
+    commitEnsuredCollections(cycle, ensured.collections);
+    setActiveCollectionId(ensured.collection.id);
     setView("resp-collection");
+  };
+
+  const commitEnsuredCollections = (cycle: CycleItem, nextCollections: Collection[]) => {
+    setCollections(nextCollections);
+    setCycles((current) =>
+      current.map((item) =>
+        item.id === cycle.id
+          ? { ...item, status: deriveCycleStatus(item, nextCollections) }
+          : item,
+      ),
+    );
   };
 
   const registerRespondentBySelf = (data: {
@@ -7054,121 +7222,285 @@ export default function App() {
     phone: string;
     role: string;
     ugId: string;
+    password: string;
   }) => {
-    const id = `resp-auto-${respondents.length + 1}`;
-    setRespondents([
-      ...respondents,
-      {
-        ...data,
-        id,
-        createdBySelf: true,
-        emailVerified: true,
-        collectionIds: [linkCollectionId],
-      },
-    ]);
-    setCurrentRespondentId(id);
-    setActiveCollectionId(linkCollectionId);
+    if (!linkCycle || !linkCycle.ugIds.includes(data.ugId)) return;
+    if (!cycleAcceptsNewCollections(linkCycle, collections, data.ugId)) {
+      setToast("Este ciclo foi finalizado e não aceita novas coletas");
+      return;
+    }
+    if (emailReservedForRespondent(data.email)) {
+      setToast("Este e-mail pertence a um perfil institucional e não pode ser usado por respondente");
+      return;
+    }
+    const existing = respondents.find(
+      (item) => normalizeAccountEmail(item.email) === normalizeAccountEmail(data.email),
+    );
+    if (existing && existing.ugId !== data.ugId) {
+      setToast("Este e-mail já está vinculado a outro órgão");
+      return;
+    }
+    if (existing?.emailVerified) {
+      setToast("Este e-mail já possui cadastro — use a opção Entrar");
+      return;
+    }
+    if (!existing) {
+      const emailDomain = normalizeAccountEmail(data.email).split("@")[1] ?? "";
+      const domainMatches = linkCycle.ugIds.filter((ugId) => {
+        const focalEmail = ugList.find((item) => item.id === ugId)?.focalEmail ?? "";
+        return (normalizeAccountEmail(focalEmail).split("@")[1] ?? "") === emailDomain;
+      });
+      if (domainMatches.length !== 1 || domainMatches[0] !== data.ugId) {
+        setToast(
+          "O domínio do e-mail não corresponde à UG selecionada; peça ao ponto focal para pré-cadastrar seu acesso",
+        );
+        return;
+      }
+    }
+    const respondent: Respondent = existing
+      ? { ...existing, ...data, email: data.email.trim(), emailVerified: true }
+      : {
+          ...data,
+          email: data.email.trim(),
+          id: `resp-auto-${respondents.length + 1}`,
+          createdBySelf: true,
+          emailVerified: true,
+        };
+    setRespondents(
+      existing
+        ? respondents.map((item) => (item.id === existing.id ? respondent : item))
+        : [...respondents, respondent],
+    );
+    const ensured = ensureIndividualCollection(collections, linkCycle, {
+      id: respondent.id,
+      type: "respondente",
+      name: respondent.name,
+      ugId: respondent.ugId,
+    });
+    commitEnsuredCollections(linkCycle, ensured.collections);
+    setCurrentRespondentId(respondent.id);
+    setActiveCollectionId(ensured.collection.id);
     setView("resp-collection");
   };
 
-  const loginGeneralRespondent = (email: string, password: string): boolean => {
-    if (!password.trim()) return false;
+  const loginRespondentFromCollection = (email: string, password: string): boolean => {
+    if (emailReservedForRespondent(email)) return false;
     const found = respondents.find(
-      (item) => item.email.toLowerCase() === email.trim().toLowerCase(),
+      (item) => normalizeAccountEmail(item.email) === normalizeAccountEmail(email),
     );
-    if (!found) return false;
+    if (
+      !found ||
+      found.password !== password ||
+      !linkCycle ||
+      !linkCycle.ugIds.includes(found.ugId)
+    ) return false;
+    const existingCollection = collections.find(
+      (item) =>
+        item.cycleId === linkCycle.id &&
+        item.ownerType === "respondente" &&
+        item.ownerId === found.id,
+    );
+    if (!existingCollection && !cycleAcceptsNewCollections(linkCycle, collections, found.ugId)) return false;
+    const ensured = ensureIndividualCollection(collections, linkCycle, {
+      id: found.id,
+      type: "respondente",
+      name: found.name,
+      ugId: found.ugId,
+    });
+    commitEnsuredCollections(linkCycle, ensured.collections);
     setCurrentRespondentId(found.id);
+    setActiveCollectionId(ensured.collection.id);
+    setView("resp-collection");
+    return true;
+  };
+
+  const registerRespondentByFocal = (cycleId: string, name: string, email: string) => {
+    const cycle = cycles.find((item) => item.id === cycleId);
+    if (
+      !currentFocalUg ||
+      !cycle ||
+      !cycleAcceptsNewCollections(cycle, collections, currentFocalUg.id) ||
+      !cycle.ugIds.includes(currentFocalUg.id)
+    ) return;
+    if (emailReservedForRespondent(email)) {
+      setToast("Este e-mail pertence a um perfil institucional e não pode ser usado por respondente");
+      return;
+    }
+    const existing = respondents.find(
+      (item) => normalizeAccountEmail(item.email) === normalizeAccountEmail(email),
+    );
+    if (existing && existing.ugId !== currentFocalUg.id) {
+      setToast("Este e-mail já está vinculado a outro órgão");
+      return;
+    }
+    const respondent: Respondent = existing ?? {
+      id: `resp-pf-${respondents.length + 1}`,
+      name,
+      email,
+      phone: "",
+      role: "Respondente técnico",
+      ugId: currentFocalUg.id,
+      password: "",
+      createdBySelf: false,
+      emailVerified: false,
+    };
+    if (!existing) setRespondents([...respondents, respondent]);
+    const ensured = ensureIndividualCollection(collections, cycle, {
+      id: respondent.id,
+      type: "respondente",
+      name: respondent.name,
+      ugId: currentFocalUg.id,
+    });
+    commitEnsuredCollections(cycle, ensured.collections);
+    setToast("Respondente adicionado à coleta");
+  };
+
+  const respondAsFocal = (cycleId: string) => {
+    const cycle = cycles.find((item) => item.id === cycleId);
+    if (
+      !currentFocalUg ||
+      !cycle ||
+      !cycleAcceptsNewCollections(cycle, collections, currentFocalUg.id) ||
+      !cycle.ugIds.includes(currentFocalUg.id)
+    ) return;
+    const ensured = ensureIndividualCollection(collections, cycle, {
+      id: currentFocalUg.id,
+      type: "ponto-focal",
+      name: currentFocalUg.focalName,
+      ugId: currentFocalUg.id,
+    });
+    commitEnsuredCollections(cycle, ensured.collections);
+    setActiveCollectionId(ensured.collection.id);
+    setExpandedFocalCycleId(cycleId);
+    setView("focal-collection-detail");
+  };
+
+  const registerFocalSignal = (
+    cycleId: string,
+    kind: FocalSignal["kind"],
+    message: string,
+  ) => {
+    const cycle = cycles.find((item) => item.id === cycleId);
+    if (
+      !currentFocalUg ||
+      !cycle ||
+      cycle.creationStatus !== "aprovado" ||
+      !cycle.ugIds.includes(currentFocalUg.id) ||
+      !message.trim()
+    ) return;
+    setFocalSignals([
+      ...focalSignals,
+      {
+        id: `signal-${focalSignals.length + 1}`,
+        cycleId,
+        ugId: currentFocalUg.id,
+        kind,
+        message,
+        author: currentFocalUg.focalName,
+        createdAt: currentDateLabel(),
+      },
+    ]);
+    setToast("Sinalização registrada para a STC");
+  };
+
+  const loginByEmail = (email: string, password: string): boolean => {
+    const normalizedEmail = normalizeAccountEmail(email);
+    if (normalizedEmail === "analista@stc.ma.gov.br") {
+      if (password !== "senha-simulada") return false;
+      setCurrentFocalUgId("");
+      setCurrentRespondentId("");
+      setRole("stc-analista");
+      setView("stc-home");
+      return true;
+    }
+    if (normalizedEmail === "especialista@stc.ma.gov.br") {
+      if (password !== "senha-simulada") return false;
+      setCurrentFocalUgId("");
+      setCurrentRespondentId("");
+      setRole("stc-especialista");
+      setView("stc-home");
+      return true;
+    }
+    const matchingInstitutionalUgs = ugList.filter(
+      (item) => normalizeAccountEmail(item.focalEmail) === normalizedEmail,
+    );
+    if (matchingInstitutionalUgs.length > 0) {
+      const focalUg =
+        matchingInstitutionalUgs.length === 1 && matchingInstitutionalUgs[0].id !== "stc"
+          ? matchingInstitutionalUgs[0]
+          : null;
+      if (!focalUg || password !== "senha-simulada") return false;
+      setCurrentFocalUgId(focalUg.id);
+      setCurrentRespondentId("");
+      setExpandedFocalCycleId("");
+      setRole("ponto-focal");
+      setView("focal-dashboard");
+      return true;
+    }
+    const respondent = respondents.find(
+      (item) => normalizeAccountEmail(item.email) === normalizedEmail && item.password === password,
+    );
+    if (!respondent) return false;
+    setCurrentFocalUgId("");
+    setCurrentRespondentId(respondent.id);
+    setRole("respondente");
     setView("resp-dashboard");
     return true;
   };
 
-  const loginRespondentFromCollection = (email: string): boolean => {
-    const found = respondents.find(
-      (item) => item.email.toLowerCase() === email.trim().toLowerCase(),
-    );
-    if (!found) return false;
-    if (!found.collectionIds.includes(linkCollectionId)) {
-      setRespondents(
-        respondents.map((item) =>
-          item.id === found.id
-            ? { ...item, collectionIds: [...item.collectionIds, linkCollectionId] }
-            : item,
-        ),
-      );
-    }
-    setCurrentRespondentId(found.id);
-    setActiveCollectionId(linkCollectionId);
-    setView("resp-collection");
-    return true;
-  };
-
-  // §8.2: o pré-cadastro acontece dentro da coleta — a pessoa entra SÓ naquela coleta.
-  const registerRespondentByFocal = (name: string, email: string, collectionId: string) => {
-    setRespondents([
-      ...respondents,
-      {
-        id: `resp-pf-${respondents.length + 1}`,
-        name,
-        email,
-        phone: "",
-        role: "Respondente técnico",
-        ugId: focalUser.ugId,
-        createdBySelf: false,
-        emailVerified: false,
-        collectionIds: [collectionId],
-      },
-    ]);
-    setToast("Respondente adicionado à coleta");
+  const logout = () => {
+    setRole("login");
+    setView("stc-home");
+    setCurrentRespondentId("");
+    setCurrentFocalUgId("");
+    setExpandedFocalCycleId("");
+    setProfileOpen(false);
   };
 
   const page = (() => {
     if (role === "login") {
-      return (
-        <LoginScreen
-          enter={setRoleAndReset}
-          openPilotLink={() => openCollectionLink("col-100-seduc")}
-        />
-      );
+      return <LoginScreen onLogin={loginByEmail} />;
     }
 
     if (role === "respondente") {
-      if (view === "resp-general-access") {
-        return <RespGeneralAccess onLogin={loginGeneralRespondent} />;
-      }
-      if (!currentRespondent || view === "resp-access") {
+      if ((!currentRespondent || view === "resp-access") && linkCycle) {
         return (
           <RespAccess
-            collection={linkCollection}
-            cycle={cycles.find((item) => item.id === linkCollection.cycleId)}
+            cycle={linkCycle}
             ugList={ugList}
+            registrationOpenUgIds={linkCycle.ugIds.filter((ugId) =>
+              cycleAcceptsNewCollections(linkCycle, collections, ugId),
+            )}
             onRegister={registerRespondentBySelf}
             onLogin={loginRespondentFromCollection}
           />
         );
       }
-      if (view === "resp-collection") {
-        const cycle = cycles.find((item) => item.id === activeCollection.cycleId);
-        const own = activeCollection.submissions.find(
-          (item) => item.respondentId === currentRespondentId,
-        );
+      if (!currentRespondent) return <LoginScreen onLogin={loginByEmail} />;
+      const ownActiveCollection =
+        activeCollection?.ownerType === "respondente" &&
+        activeCollection.ownerId === currentRespondent.id
+          ? activeCollection
+          : null;
+      if (view === "resp-collection" && ownActiveCollection) {
+        const cycle = cycles.find((item) => item.id === ownActiveCollection.cycleId);
         return (
           <RespCollection
-            key={`${activeCollection.id}:${own?.status ?? "novo"}`}
-            collection={activeCollection}
+            key={`${ownActiveCollection.id}:${ownActiveCollection.status}`}
+            collection={ownActiveCollection}
             cycle={cycle}
-            submission={own}
-            fieldDefs={fieldDefsForCollection(activeCollection)}
+            fieldDefs={fieldDefsForCollection(ownActiveCollection)}
             requiresFocal={Boolean(cycle?.requiresFocalPointValidation)}
             notify={setToast}
             ugList={ugList}
             onSaveDraft={(fileName, attachments) =>
-              saveDraftSubmission(activeCollection.id, fileName, attachments)
+              saveCollectionDraft(ownActiveCollection.id, fileName, attachments)
             }
             onSend={(fileName, attachments) =>
-              sendSubmission(activeCollection.id, fileName, attachments)
+              sendCollection(ownActiveCollection.id, fileName, attachments)
             }
-            onSendNegative={(reason) => sendNegativeSubmission(activeCollection.id, reason)}
-            onReportMissing={(reason) => reportMissingAttachments(activeCollection.id, reason)}
+            onSendNegative={(reason) => sendUnavailableCollection(ownActiveCollection.id, reason)}
+            onReportMissing={(reason) => reportMissingAttachments(ownActiveCollection.id, reason)}
             setView={setView}
           />
         );
@@ -7188,15 +7520,39 @@ export default function App() {
     }
 
     if (role === "ponto-focal") {
-      if (view === "focal-cycle-detail") {
+      if (!currentFocalUg) return <LoginScreen onLogin={loginByEmail} />;
+      const focalActiveCollection = activeCollection?.ugId === currentFocalUg.id ? activeCollection : null;
+      if (view === "focal-collection-detail" && focalActiveCollection) {
+        const detailCycle = cycles.find((item) => item.id === focalActiveCollection.cycleId) ?? activeCycle;
+        if (focalActiveCollection.ownerType === "ponto-focal") {
+          return (
+            <RespCollection
+              key={`${focalActiveCollection.id}:${focalActiveCollection.status}`}
+              collection={focalActiveCollection}
+              cycle={detailCycle}
+              fieldDefs={fieldDefsForCollection(focalActiveCollection)}
+              requiresFocal={false}
+              notify={setToast}
+              ugList={ugList}
+              onSaveDraft={(fileName, attachments) =>
+                saveCollectionDraft(focalActiveCollection.id, fileName, attachments)
+              }
+              onSend={(fileName, attachments) =>
+                sendCollection(focalActiveCollection.id, fileName, attachments)
+              }
+              onSendNegative={(reason) => sendUnavailableCollection(focalActiveCollection.id, reason)}
+              onReportMissing={(reason) => reportMissingAttachments(focalActiveCollection.id, reason)}
+              setView={() => setView("focal-dashboard")}
+            />
+          );
+        }
         return (
-          <FocalCycleDetail
-            cycle={activeCycle}
-            collections={collections}
-            respondents={respondents}
-            onValidate={focalValidateSubmission}
-            onReturn={focalReturnSubmission}
-            onRegisterRespondent={registerRespondentByFocal}
+          <FocalCollectionDetail
+            cycle={detailCycle}
+            collection={focalActiveCollection}
+            respondent={respondents.find((item) => item.id === focalActiveCollection.ownerId)}
+            onValidate={focalValidateCollection}
+            onReturn={focalReturnCollection}
             notify={setToast}
             setView={setView}
           />
@@ -7207,11 +7563,22 @@ export default function App() {
           cycles={cycles}
           collections={collections}
           respondents={respondents}
-          ugList={ugList}
-          openCycle={(cycleId) => {
-            setActiveCycleId(cycleId);
-            setView("focal-cycle-detail");
+          focalUg={currentFocalUg}
+          expandedCycleId={expandedFocalCycleId}
+          setExpandedCycleId={setExpandedFocalCycleId}
+          openCollection={(collectionId) => {
+            const collection = collections.find((item) => item.id === collectionId);
+            if (!collection || collection.ugId !== currentFocalUg.id) {
+              setToast("Esta coleta não pertence ao seu órgão");
+              return;
+            }
+            setActiveCycleId(collection.cycleId);
+            setActiveCollectionId(collectionId);
+            setView("focal-collection-detail");
           }}
+          onAddRespondent={registerRespondentByFocal}
+          onRespondAsFocal={respondAsFocal}
+          onSignal={registerFocalSignal}
         />
       );
     }
@@ -7261,6 +7628,7 @@ export default function App() {
           ugList={ugList}
           fieldCatalog={fieldCatalogForCycles}
           attachments={attachmentCatalog}
+          requiredAttachmentsOf={requiredAttachmentsOf}
           initialCycleId={reviewCycleId}
           onReview={reviewCycleCreation}
         />
@@ -7293,10 +7661,11 @@ export default function App() {
         <StcCycleDetail
           cycle={activeCycle}
           collections={collections}
+          signals={focalSignals}
           ugList={ugList}
           setView={setView}
           openValidation={openValidation}
-          openCollectionLink={openCollectionLink}
+          openCycleLink={openCycleLink}
         />
       );
     }
@@ -7306,11 +7675,12 @@ export default function App() {
         <StcValidation
           cycle={activeCycle}
           collections={collections}
+          signals={focalSignals}
           respondents={respondents}
           ugList={ugList}
           validationCollectionId={validationCollectionId}
           setValidationCollectionId={setValidationCollectionId}
-          onDecide={decideSubmission}
+          onDecide={decideCollection}
           setView={setView}
         />
       );
@@ -7322,7 +7692,7 @@ export default function App() {
         cycles={cycles}
         collections={collections}
         ugList={ugList}
-        copyLink={copyCollectionLink}
+        copyLink={copyCycleLink}
         openDetail={(cycleId) => {
           setActiveCycleId(cycleId);
           setView("stc-cycle-detail");
@@ -7343,16 +7713,51 @@ export default function App() {
     );
   })();
 
+  const guidanceCollection =
+    role === "respondente" &&
+    view === "resp-collection" &&
+    activeCollection?.ownerType === "respondente" &&
+    activeCollection.ownerId === currentRespondent?.id
+      ? activeCollection
+      : role === "ponto-focal" &&
+          view === "focal-collection-detail" &&
+          activeCollection?.ugId === currentFocalUg?.id
+        ? activeCollection
+        : null;
+  const guidanceCycleId =
+    role === "ponto-focal"
+      ? expandedFocalCycleId || guidanceCollection?.cycleId
+      : guidanceCollection?.cycleId;
+  const guidanceCycle =
+    cycles.find(
+      (item) =>
+        item.id === guidanceCycleId &&
+        (role !== "ponto-focal" || Boolean(currentFocalUg && item.ugIds.includes(currentFocalUg.id))),
+    ) ?? null;
+
   return (
     <div className={`app-shell ${isStcRole(role) ? "stc-accent" : ""}`}>
-      <TopBar
-        role={role}
-        setRole={setRoleAndReset}
-        respondentInitial={currentRespondent ? currentRespondent.name.charAt(0) : "R"}
-        onProfileClick={() => setProfileOpen(true)}
-      />
+      {role !== "login" ? (
+        <TopBar
+          role={role}
+          profileInitial={
+            role === "ponto-focal"
+              ? currentFocalUg?.focalName.charAt(0) ?? "P"
+              : currentRespondent?.name.charAt(0) ?? "R"
+          }
+          onProfileClick={() => setProfileOpen(true)}
+          onLogout={logout}
+        />
+      ) : null}
       <div className={role === "login" ? "login-only" : `workspace ${isStcRole(role) ? "" : "ug-workspace"}`}>
         <Sidebar role={role} view={view} setView={setView} />
+        <RoleGuidancePanel
+          role={role}
+          respondent={currentRespondent}
+          focalUg={currentFocalUg}
+          cycle={guidanceCycle}
+          collection={guidanceCollection}
+        />
         <main className="content">{page}</main>
       </div>
       {toast ? (
@@ -7372,13 +7777,13 @@ export default function App() {
           </div>
         )
       ) : null}
-      <ProfileDrawer
-        role={role}
-        respondent={currentRespondent}
-        ugList={ugList}
-        open={profileOpen}
-        onClose={() => setProfileOpen(false)}
-      />
+      {isStcRole(role) ? (
+        <ProfileDrawer
+          role={role}
+          open={profileOpen}
+          onClose={() => setProfileOpen(false)}
+        />
+      ) : null}
     </div>
   );
 }

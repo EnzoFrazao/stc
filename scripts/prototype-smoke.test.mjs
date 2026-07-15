@@ -14,27 +14,27 @@ test("boxes e SubmissionMode foram removidos por completo (código e estilos)", 
   assert.doesNotMatch(styles, /box-item|boxes-list|box-demo-list|mode-toggle/);
 });
 
-test("modelo v8: três perfis do órgão + STC e novos tipos", () => {
+test("modelo atual: perfis separados e coleta individual sem Submission", () => {
   assert.match(app, /"ponto-focal"/);
   assert.match(app, /"respondente"/);
   assert.match(app, /type ObjectKind = "fixo" \| "variavel"/);
-  assert.match(app, /interface Collection/);
-  assert.match(app, /interface Submission/);
+  assert.match(app, /export interface Collection/);
   assert.match(app, /interface Respondent/);
-  assert.match(app, /collectionIds/);
-  assert.match(app, /linkToken/);
+  assert.match(app, /ownerType: CollectionOwnerType/);
+  assert.match(app, /ownerId: string/);
+  assert.doesNotMatch(app, /interface Submission|\.submissions|collectionIds/);
+  assert.match(app, /export interface CycleItem[\s\S]*?linkToken: string/);
   assert.match(app, /requiresFocalPointValidation/);
 });
 
-test("novos estados de submissão e de ciclo existem", () => {
-  assert.match(app, /"aguardando-ponto-focal"/);
-  assert.match(app, /"resposta-negativa"/);
-  assert.match(app, /"rascunho"/);
-  assert.match(app, /"nao-enviado-no-prazo"/);
-  assert.match(app, /isNegative/);
+test("estados da coleta, estado agregado do ciclo e indisponibilidade são separados", () => {
+  assert.match(app, /export type CollectionStatus =[\s\S]*?"aguardando-ponto-focal"[\s\S]*?"aguardando-stc"[\s\S]*?"em-correcao"[\s\S]*?"aprovada"/);
+  assert.match(app, /export type CycleStatus =[\s\S]*?"em-andamento"[\s\S]*?"finalizado"[\s\S]*?"sem-envio-no-prazo"/);
+  assert.match(app, /export type ResponseKind = "dados" \| "indisponibilidade"/);
+  assert.doesNotMatch(app, /isNegative|"resposta-negativa"/);
 });
 
-test("revisão da criação tem estado, auditoria e geração idempotente separados das submissões", () => {
+test("revisão da criação gera um único link estável e nenhuma coleta vazia", () => {
   assert.match(
     app,
     /type CreationReviewStatus = "aguardando-analise" \| "ajustes-solicitados" \| "aprovado"/,
@@ -42,10 +42,10 @@ test("revisão da criação tem estado, auditoria e geração idempotente separa
   assert.match(app, /interface CycleReviewEvent/);
   assert.match(app, /creationStatus: CreationReviewStatus/);
   assert.match(app, /reviewHistory: CycleReviewEvent\[\]/);
-  assert.match(app, /collectionIds: \[\],[\s\S]*?creationStatus: "aguardando-analise"/);
   assert.match(app, /reviewDraft\.objectKind === "fixo" && !object/);
   assert.match(app, /cycle\.creationStatus === "aprovado"/);
-  assert.match(app, /\.filter\(\(collection\) => !collections\.some\(\(item\) => item\.id === collection\.id\)\)/);
+  assert.match(app, /reviewedCycle\.linkToken = cycle\.linkToken \|\| `agz-\$\{cycle\.id\}`/);
+  assert.doesNotMatch(app, /collectionIds|\.submissions/);
 });
 
 test("piloto MT-0016 e exemplo MT-0018 são ambos objetos fixos", () => {
@@ -83,13 +83,20 @@ test("checagem estrutural: anexos + estrutura da planilha, nunca conteúdo", () 
 });
 
 test("Correção 1: o reenvio passa pelo ponto focal de novo — resending não muda o status", () => {
-  assert.match(app, /status: statusAfterRespondentSend\(Boolean\(cycle\?\.requiresFocalPointValidation\), false\)/);
+  assert.match(
+    app,
+    /status:\s*statusAfterCollectionSend\(\s*collection\.ownerType,\s*Boolean\(cycle\?\.requiresFocalPointValidation\),\s*false,\s*\)/,
+  );
   assert.doesNotMatch(app, /!resending &&/);
 });
 
-test("Correção 2: resposta negativa respeita o gate do focal e segue como estado próprio", () => {
-  assert.match(app, /status: statusAfterRespondentSend\(Boolean\(cycle\?\.requiresFocalPointValidation\), true\)/);
-  assert.match(app, /status: statusAfterFocal\(item\.isNegative\)/);
+test("indisponibilidade respeita o gate do focal sem virar estado de pipeline", () => {
+  assert.match(
+    app,
+    /status:\s*statusAfterCollectionSend\(\s*collection\.ownerType,\s*Boolean\(cycle\?\.requiresFocalPointValidation\),\s*true,\s*\)/,
+  );
+  assert.match(app, /status: statusAfterFocal\(collection\.responseKind === "indisponibilidade"\)/);
+  assert.match(app, /responseKind: "indisponibilidade"/);
   assert.match(app, /Devolver ao respondente/);
 });
 
@@ -117,13 +124,14 @@ test("Correção 4: duas checagens independentes e caminho de reprovação naveg
   assert.match(app, /fora do modelo ✗/);
 });
 
-test("Correção 5: 'Atrasada' é derivado — SubmissionStatus não ganhou estado novo", () => {
+test("prazo vencido é derivado e não vira estado da coleta", () => {
   assert.match(app, /function isPastDeadline/);
   assert.match(app, />Atrasada</);
   assert.match(
     app,
-    /type SubmissionStatus =\s*\| "pendente"\s*\| "rascunho"\s*\| "enviado"\s*\| "aguardando-ponto-focal"\s*\| "reaberto"\s*\| "aprovado"\s*\| "resposta-negativa";/,
+    /export type CollectionStatus =\s*\| "pendente"\s*\| "rascunho"\s*\| "aguardando-ponto-focal"\s*\| "aguardando-stc"\s*\| "em-correcao"\s*\| "aprovada";/,
   );
+  assert.doesNotMatch(app, /CollectionStatus[\s\S]{0,180}"atrasada"/);
 });
 
 test("anexos do Tesauro usam o mapeamento gerado por objeto e variável começa vazia", () => {
@@ -131,7 +139,8 @@ test("anexos do Tesauro usam o mapeamento gerado por objeto e variável começa 
   assert.match(app, /const attachmentCatalog = tesauroAttachments/);
   assert.match(app, /function requiredAttachmentsForObject/);
   assert.match(app, /attachmentIds\?: readonly string\[\]/);
-  assert.match(app, /requiredAttachments: requiredAttachmentsForObject\(object\)/);
+  assert.match(app, /requiredAttachments: requiredAttachmentsForObject\(object, registeredAttachments\)/);
+  assert.match(app, /requiredAttachmentsForObject\(object, objectAttachmentsRegistry\[object\.code\] \?\? \[\]\)/);
   assert.match(app, /function draftForVariable[\s\S]*requiredAttachments: \[\]/);
   assert.match(app, /Anexos obrigatórios do ciclo/);
 });
@@ -144,43 +153,50 @@ test("cadastro híbrido do respondente (R3) com validação por e-mail", () => {
   assert.match(app, /Órgão diferente do vínculo da coleta/);
 });
 
-test("painel do ponto focal: ciclo inteiro, validação e cadastro de respondentes", () => {
+test("painel do ponto focal: ciclos expansíveis, coletas individuais e ações do papel", () => {
   assert.match(app, /focal-dashboard/);
+  assert.match(app, /focal-cycle-accordion/);
+  assert.match(app, /aria-expanded=\{expanded\}/);
   assert.match(app, /Validar e encaminhar à STC/);
-  assert.match(app, /Pré-cadastrar aqui adiciona/);
-  assert.match(app, /Auto-cadastro/);
+  assert.match(app, /Criar coleta do respondente/);
+  assert.match(app, /Responder como ponto focal/);
+  assert.match(app, /Sinalizar à STC/);
 });
 
-test("TAREFA_UI §8: focal vê as submissões no painel e cadastra respondente dentro da coleta", () => {
+test("ponto focal vê somente ciclos e coletas da própria UG", () => {
   assert.match(app, /aguardando sua validação/);
-  assert.match(app, /focal-sub-row/);
+  assert.match(app, /item\.ugId === focalUg\.id/);
   assert.match(app, /Adicionar respondente/);
   assert.match(app, /Dar ciência da negativa e encaminhar à STC/);
-  assert.match(app, /Coletas do órgão/);
+  assert.match(app, /Ciclos do órgão/);
+  assert.match(app, /Coleta individual/);
 });
 
-test("validação STC: rejeitar envio reabre a coleta; submissões separadas; observações encadeadas", () => {
+test("validação STC: rejeição reabre a coleta e cada resposta permanece individual", () => {
   assert.match(app, /Rejeitar envio/);
   assert.match(app, /reabre a coleta/);
-  assert.match(app, /submissões aparecem separadas/);
+  assert.match(app, /cycleCollections\.map\(\(collection\) =>/);
+  assert.doesNotMatch(app, /\.submissions/);
   assert.match(app, /observations/);
   assert.match(app, /ObservationThread/);
+  assert.match(app, /Sinalizações recebidas dos pontos focais/);
 });
 
 test("pendências da STC marcadas no código, sem respostas inventadas", () => {
-  assert.match(app, /TODO\(P-019\)/);
   assert.match(app, /TODO\(P-020\)/);
   assert.match(app, /TODO\(P-021\)/);
   assert.match(app, /TODO\(P-022\)/);
 });
 
-test("login aurora local e STC dividida entre analista e especialista", () => {
-  assert.match(app, /login-aurora/);
-  assert.match(styles, /\.login-screen\.login-aurora::before/);
-  assert.match(styles, /@keyframes aurora-flow/);
+test("login único centralizado identifica perfis sem seletor permanente", () => {
+  assert.match(app, /unified-login-screen/);
+  assert.match(app, /unified-login-card/);
+  assert.match(styles, /\.login-only \.content \{\s*padding: 0;/);
+  assert.match(styles, /\.unified-login-screen[\s\S]*?place-items: center/);
+  assert.match(app, /<form className="unified-login-form"/);
+  assert.match(app, /Primeiro acesso\? Veja como criar seu cadastro/);
+  assert.doesNotMatch(app, /Entrar como|role-switch/);
   assert.match(app, /type StcRole = "stc-analista" \| "stc-especialista"/);
-  assert.match(app, /Entrar como Analista STC/);
-  assert.match(app, /Entrar como Especialista STC/);
   assert.match(app, /label: "Painel STC"/);
   assert.match(app, /title: "Criar Ciclo"/);
   assert.match(app, /title: "Aprovar Ciclo"/);
@@ -188,26 +204,25 @@ test("login aurora local e STC dividida entre analista e especialista", () => {
   assert.match(app, /function ProfileDrawer/);
 });
 
-test("TAREFA_UI §1.2: CycleStatus renomeado e recolorido — verde terminou, amarelo agindo, vermelho prazo", () => {
-  assert.match(app, /"aguardando-analise-stc"/);
+test("status de ciclo e coleta usam paleta operacional coerente", () => {
   assert.match(
     app,
-    /export type CycleStatus =\s*\| "ativo"\s*\| "aguardando-ponto-focal"\s*\| "aguardando-analise-stc"/,
+    /export type CycleStatus =\s*\| "em-andamento"\s*\| "finalizado"\s*\| "sem-envio-no-prazo"/,
   );
   assert.doesNotMatch(app, /"respondido"/);
   assert.match(app, /Aguardando análise da STC/);
   assert.match(app, /"aguardando-ponto-focal": "warning"/);
-  assert.match(app, /"aguardando-analise-stc": "warning"/);
-  assert.match(app, /correcao: "orange"/);
-  assert.match(app, /finalizado: "success"/);
+  assert.match(app, /"aguardando-stc": "warning"/);
+  assert.match(app, /"em-correcao": "orange"/);
+  assert.match(app, /aprovada: "success"/);
   assert.match(styles, /\.status-pill\.orange/);
-  assert.match(styles, /\.ug-cycle-row\.aguardando-analise-stc/);
+  assert.match(styles, /\.focal-cycle-accordion\.finalizado/);
 });
 
 test("Task 2: status agregado recebe o ciclo e todas as coletas", () => {
   assert.match(
     app,
-    /export function deriveCycleStatus\(cycle: CycleItem, collections: Collection\[\]\): CycleStatus/,
+    /export function deriveCycleStatus\([\s\S]*?collections: Collection\[\],[\s\S]*?\): CycleStatus/,
   );
   assert.match(app, /deriveCycleStatus\(cycle, nextCollections\)/);
 });
@@ -257,10 +272,11 @@ test("TAREFA_UI §4: Registro — objetos fixos, wizard de UG (ponto focal por e
   assert.match(app, /customObjects/);
 });
 
-test("TAREFA_UI §5: acesso com as duas portas visíveis e contexto da coleta no topo", () => {
+test("acesso pelo link único tem cadastro e login com contexto do ciclo", () => {
   assert.match(app, /access-doors/);
-  assert.match(app, /Você chegou pelo link desta coleta/);
+  assert.match(app, /Você chegou pelo link deste ciclo/);
   assert.match(app, /enviada em nome do órgão/);
+  assert.match(app, /onLogin: \(email: string, password: string\) => boolean/);
   assert.match(styles, /\.access-doors/);
 });
 
@@ -279,13 +295,14 @@ test("TAREFA_UI §7: wizard em 4 etapas com stepper clicável, etapa que ensina 
 
 test("Task 3: comprovantes tipados preservam o histórico e aparecem nos três contextos", () => {
   const receiptKinds = app.match(/export type ReceiptKind\s*=([\s\S]*?);/)?.[1] ?? "";
-  assert.match(app, /export interface SubmissionReceipt\s*\{/);
+  assert.match(app, /export interface CollectionReceipt\s*\{/);
   for (const kind of ["envio", "rejeicao", "fechamento"]) {
     assert.match(receiptKinds, new RegExp(`"${kind}"`));
   }
-  assert.match(app, /receipts\s*:\s*SubmissionReceipt\[\]/);
+  assert.match(app, /receipts\s*:\s*CollectionReceipt\[\]/);
   assert.match(app, /export function createReceipt/);
-  assert.match(app, /receipts\s*:\s*previous\?\.receipts\s*\?\?\s*\[\]/);
+  assert.match(app, /\.\.\.collection\.receipts/);
+  assert.match(app, /\.\.\.item\.receipts/);
   assert.match(app, /createReceipt\(\s*"envio"/);
   assert.match(app, /createReceipt\(\s*"rejeicao"/);
   assert.match(app, /createReceipt\(\s*"fechamento"/);
@@ -308,9 +325,9 @@ test("TAREFA_UI §9: estados vazios orientam e a base de acessibilidade permanec
   assert.match(styles, /focus-visible/);
 });
 
-test("Task 8: contratos integrados de acesso, registro, histórico e wizard", () => {
-  assert.match(app, /"resp-general-access"/);
-  assert.match(app, /function RespGeneralAccess\s*\(/);
+test("contratos integrados usam login único, registro, histórico e wizard", () => {
+  assert.doesNotMatch(app, /resp-general-access|function RespGeneralAccess/);
+  assert.match(app, /function LoginScreen\s*\(/);
   assert.match(app, /objectOverrides/);
   assert.match(app, /setObjectOverrides/);
   assert.match(app, /Período inicial/);
@@ -332,33 +349,38 @@ test("TAREFA_UI fundamentos: prazo com contexto, toast e UG com ponto focal cada
   assert.match(app, /useState<Ug\[\]>\(seedUgs\)/);
 });
 
-test("Task 6: vocabulário distingue o ciclo em criação das coletas individuais aprovadas", () => {
+test("vocabulário distingue ciclos da STC e coletas individuais", () => {
   assert.match(app, /Criar Ciclo/);
   assert.match(app, /Enviar ciclo para análise/);
   assert.match(app, /title="Aprovar Ciclo"/);
   assert.match(app, /Aprovar e enviar às UGs/);
-  assert.match(app, /Vê o acionamento inteiro do órgão/);
-  assert.match(app, /Dá ciência quando a coleta exige/);
-  assert.match(app, /não vê o conceito de acionamento/);
-  assert.match(app, /A STC cria o acionamento e gera o link de cada coleta/);
-  assert.doesNotMatch(app, /Criar coleta|Acionar e gerar links das coletas/);
+  assert.match(app, /Coordenar a resposta do órgão/);
+  assert.match(app, /Somente suas coletas/);
+  assert.match(app, /Um link por ciclo, anexado ao SEI/);
+  assert.match(app, /coleta individual/);
+  assert.doesNotMatch(app, /\.submissions|collectionIds/);
 });
 
 test("alvos de toque preservam no mínimo 44px nos controles de navegação e criação", () => {
-  const roleButtonRules = styles.match(/\.role-switch button \{[\s\S]*?\n\}/)?.[0] ?? "";
-  const mobileRoleRules = styles.match(/@media \(max-width: 820px\)[\s\S]*?\.role-switch button \{[\s\S]*?\n\s*\}/)?.[0] ?? "";
+  const loginButtonRules = styles.match(/\.unified-login-form \.primary-button \{[\s\S]*?\n\}/)?.[0] ?? "";
+  const logoutRules = styles.match(/\.topbar-logout \{[\s\S]*?\n\}/)?.[0] ?? "";
   const mobileSidebarRules = styles.match(/@media \(max-width: 820px\)[\s\S]*?\.sidebar nav button \{[\s\S]*?\n\s*\}/)?.[0] ?? "";
   const detailsControlRules = styles.match(/\.details-form input,[\s\S]*?\.cycle-meta-grid input \{[\s\S]*?\n\}/)?.[0] ?? "";
   const switchRules = styles.match(/\.switch \{[\s\S]*?\n\}/)?.[0] ?? "";
   const profileTriggerRules = styles.match(/(?:^|\n)\.profile-avatar \{[\s\S]*?\n\}/)?.[0] ?? "";
+  const uploadRules = styles.match(/\.review-item-actions \.ghost-button \{[\s\S]*?\n\}/)?.[0] ?? "";
+  const removeAttachmentRules = styles.match(/\.chips button \{[\s\S]*?\n\}/)?.[0] ?? "";
 
-  assert.match(roleButtonRules, /min-height: 44px/);
-  assert.match(mobileRoleRules, /min-height: 44px/);
+  assert.match(loginButtonRules, /min-height: 50px/);
+  assert.match(logoutRules, /min-height: 44px/);
   assert.match(mobileSidebarRules, /min-height: 44px/);
   assert.match(detailsControlRules, /min-height: 44px/);
   assert.match(switchRules, /height: 44px/);
   assert.match(profileTriggerRules, /min-width: 44px/);
   assert.match(profileTriggerRules, /min-height: 44px/);
+  assert.match(uploadRules, /min-height: 44px/);
+  assert.match(removeAttachmentRules, /width: 44px/);
+  assert.match(removeAttachmentRules, /height: 44px/);
 });
 
 test("Task 6 pós-revisão: recuperação do clipboard e foco acessível", () => {
@@ -387,10 +409,27 @@ test("layout mobile: nota compacta e workspace sem sidebar para o órgão", () =
   assert.match(app, /!isStcRole\(role\)\) return null/);
 });
 
-test("layout mobile: seletor dos quatro perfis usa grade 2 × 2 sem ampliar a página", () => {
-  assert.match(styles, /\.role-switch \{\s*display: grid;\s*grid-column: 1 \/ -1;\s*grid-row: 2;/);
-  assert.match(styles, /grid-template-columns: repeat\(2, minmax\(0, 1fr\)\);/);
-  assert.match(styles, /\.role-switch button \{[\s\S]*?min-width: 0;/);
+test("layout mobile mantém topbar e painel contextual sem ampliar a página", () => {
+  assert.doesNotMatch(styles, /\.role-switch/);
+  assert.match(styles, /@media \(max-width: 820px\)[\s\S]*?\.topbar \{\s*grid-template-columns: 1fr;/);
+  assert.match(styles, /grid-template-columns: minmax\(0, 1fr\) 44px auto/);
+  assert.match(styles, /grid-template-areas: "content guidance"/);
+  assert.doesNotMatch(styles, /\.role-guidance-panel \{\s*order: -1;/);
+  assert.match(styles, /@media \(max-width: 640px\)[\s\S]*?\.role-guidance-panel p,[\s\S]*?font-size: 0\.95rem/);
+});
+
+test("auditoria de foco preserva contraste no acordeão focal", () => {
+  const focalFocusRules = styles.match(/\.focal-cycle-toggle:focus-visible \{[\s\S]*?\n\}/)?.[0] ?? "";
+  assert.match(focalFocusRules, /outline: 3px solid #075ea8/);
+  assert.match(focalFocusRules, /outline-offset: 3px/);
+  assert.doesNotMatch(focalFocusRules, /rgba\(/);
+});
+
+test("datas operacionais são calculadas no momento da ação e no fuso local", () => {
+  assert.match(app, /export function dateIsoAtTimezoneOffset/);
+  assert.match(app, /function currentDateLabel\(\)/);
+  assert.doesNotMatch(app, /const today\s*=/);
+  assert.match(app, /currentDateLabel\(\)/);
 });
 
 test("fila da análise reserva a largura do card para o título e empilha o status", () => {

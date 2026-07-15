@@ -10,8 +10,23 @@ Object.defineProperty(window, "scrollTo", {
 
 afterEach(() => cleanup());
 
+type DemoProfile = "analista" | "especialista" | "respondente";
+
+async function loginAs(user: ReturnType<typeof userEvent.setup>, profile: DemoProfile) {
+  const logout = screen.queryByRole("button", { name: "Sair" });
+  if (logout) await user.click(logout);
+  const emails: Record<DemoProfile, string> = {
+    analista: "analista@stc.ma.gov.br",
+    especialista: "especialista@stc.ma.gov.br",
+    respondente: "joao.lima@seduc.ma.gov.br",
+  };
+  fireEvent.change(screen.getByLabelText("E-mail"), { target: { value: emails[profile] } });
+  fireEvent.change(screen.getByLabelText("Senha"), { target: { value: "senha-simulada" } });
+  await user.click(screen.getByRole("button", { name: "Entrar" }));
+}
+
 async function openCreateCycle(user: ReturnType<typeof userEvent.setup>) {
-  await user.click(screen.getByRole("button", { name: "Entrar como Analista STC" }));
+  await loginAs(user, "analista");
   await user.click(
     within(screen.getByLabelText("Ações do perfil STC")).getByRole("button", {
       name: /Criar Ciclo/i,
@@ -73,7 +88,7 @@ describe("criação e aprovação de ciclos", () => {
     await user.click(screen.getByRole("button", { name: /SEDUC Secretaria de Estado da Educação/ }));
     fireEvent.change(screen.getByLabelText("Título"), { target: { value: "Ciclo com estado acessível" } });
     await user.click(screen.getByRole("button", { name: "Enviar ciclo para análise" }));
-    await user.click(screen.getByRole("button", { name: "Especialista STC" }));
+    await loginAs(user, "especialista");
 
     expect(screen.getByText("Aprovação e acompanhamento")).toBeTruthy();
     await user.click(
@@ -208,7 +223,7 @@ describe("criação e aprovação de ciclos", () => {
     );
     await createVariableCycle(user, "Segundo ciclo da fila", "Objeto pontual da fila");
 
-    await user.click(screen.getByRole("button", { name: "Especialista STC" }));
+    await loginAs(user, "especialista");
     await user.click(
       within(screen.getByLabelText("Ações do perfil STC")).getByRole("button", { name: /Aprovar Ciclo/i }),
     );
@@ -230,7 +245,7 @@ describe("criação e aprovação de ciclos", () => {
     await openCreateCycle(user);
     await createFixedCycle(user, "Ciclo com objeto alterado na análise");
 
-    await user.click(screen.getByRole("button", { name: "Especialista STC" }));
+    await loginAs(user, "especialista");
     await user.click(
       within(screen.getByLabelText("Ações do perfil STC")).getByRole("button", {
         name: /Aprovar Ciclo/i,
@@ -258,13 +273,13 @@ describe("criação e aprovação de ciclos", () => {
     ).toBe("false");
   });
 
-  test("aprovação gera planilha somente para variável e uma coleta por UG", async () => {
+  test("aprovação gera planilha somente para variável e um link único do ciclo", async () => {
     const user = userEvent.setup();
     render(<App />);
     await openCreateCycle(user);
     await createVariableCycle(user, "Ciclo variável aprovado", "Objeto único aprovado");
 
-    await user.click(screen.getByRole("button", { name: "Especialista STC" }));
+    await loginAs(user, "especialista");
     await user.click(
       within(screen.getByLabelText("Ações do perfil STC")).getByRole("button", { name: /Aprovar Ciclo/i }),
     );
@@ -275,13 +290,13 @@ describe("criação e aprovação de ciclos", () => {
 
     expect(screen.getByText("Planilha gerada a partir dos campos selecionados")).toBeTruthy();
 
-    await user.click(screen.getByRole("button", { name: "Analista STC" }));
+    await loginAs(user, "analista");
     await user.click(
       within(screen.getByLabelText("Ações do perfil STC")).getByRole("button", { name: /Acompanhar ciclos/i }),
     );
     const card = screen.getByText("Ciclo variável aprovado", { selector: "strong" }).closest("article");
     expect(card).toBeTruthy();
-    expect(within(card as HTMLElement).getAllByRole("button", { name: /Copiar link da coleta/ })).toHaveLength(1);
+    expect(within(card as HTMLElement).getAllByRole("button", { name: /Copiar link do ciclo/ })).toHaveLength(1);
   });
 
   test("aprovação de fixo informa que o modelo ainda precisa ser vinculado", async () => {
@@ -290,7 +305,7 @@ describe("criação e aprovação de ciclos", () => {
     await openCreateCycle(user);
     await createFixedCycle(user, "Ciclo fixo aprovado");
 
-    await user.click(screen.getByRole("button", { name: "Especialista STC" }));
+    await loginAs(user, "especialista");
     await user.click(
       within(screen.getByLabelText("Ações do perfil STC")).getByRole("button", { name: /Aprovar Ciclo/i }),
     );
@@ -306,33 +321,26 @@ describe("criação e aprovação de ciclos", () => {
   test("painel do respondente não anuncia download para modelo fixo ainda não vinculado", async () => {
     const user = userEvent.setup();
     render(<App />);
-    await user.click(screen.getByRole("button", { name: "Entrar como respondente" }));
-    fireEvent.change(screen.getByLabelText("E-mail do respondente"), {
-      target: { value: "clara.nunes@sinfra.ma.gov.br" },
-    });
-    fireEvent.change(screen.getByLabelText("Senha do respondente"), {
-      target: { value: "senha-simulada" },
-    });
-    await user.click(screen.getByRole("button", { name: "Acessar minhas coletas" }));
+    await user.type(screen.getByLabelText("E-mail"), "clara.nunes@sinfra.ma.gov.br");
+    await user.type(screen.getByLabelText("Senha"), "senha-simulada");
+    await user.click(screen.getByRole("button", { name: "Entrar" }));
 
     expect(screen.getAllByText(/Modelo fixo MT-0018 pendente de vinculação/).length).toBeGreaterThan(0);
     expect(screen.queryByText("Planilha-padrão pronta para download")).toBeNull();
   });
 
-  test("modelo fixo pendente bloqueia seleção de planilha e envio do respondente", async () => {
+  test("modelo fixo pendente bloqueia planilha, mas preserva a resposta negativa", async () => {
     const user = userEvent.setup();
     render(<App />);
-    await user.click(screen.getByRole("button", { name: "Abrir link da coleta (SEI)" }));
-    fireEvent.change(screen.getByPlaceholderText("ex.: joao.lima@seduc.ma.gov.br"), {
-      target: { value: "joao.lima@seduc.ma.gov.br" },
-    });
-    fireEvent.change(screen.getByLabelText("Senha"), { target: { value: "senha-simulada" } });
-    await user.click(screen.getByRole("button", { name: "Entrar" }));
+    await loginAs(user, "respondente");
+    const collectionCard = screen.getByText(/MT-0016\s*·\s*Estagiário/i).closest("article");
+    expect(collectionCard).toBeTruthy();
+    await user.click(within(collectionCard as HTMLElement).getByRole("button", { name: "Responder coleta" }));
     await user.click(screen.getByRole("button", { name: /Preencher e subir/ }));
 
     expect(
       screen.getByText(
-        "O modelo fixo MT-0016 ainda não foi vinculado. Não é possível subir ou enviar respostas.",
+        "O modelo fixo MT-0016 ainda não foi vinculado. Não é possível subir nem enviar planilha; a resposta negativa continua disponível.",
       ),
     ).toBeTruthy();
     expect(
@@ -355,7 +363,7 @@ describe("criação e aprovação de ciclos", () => {
     expect(
       (screen.getByRole("button", { name: "Não tenho esta informação" }) as HTMLButtonElement)
         .disabled,
-    ).toBe(true);
+    ).toBe(false);
     expect(
       (screen.getByRole("button", { name: "Salvar rascunho" }) as HTMLButtonElement).disabled,
     ).toBe(true);
